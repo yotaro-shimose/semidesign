@@ -1,7 +1,8 @@
-"""semidesign: a small 1D silicon process simulator."""
+"""semidesign: a 2D/3D silicon process simulator aimed at image-sensor pixels."""
 
-from .recipe import load_recipe, run_recipe
-from .simulator import Wafer
+from .grid import Grid
+from .recipe import build_simulation, load_recipe, run_recipe
+from .simulation import Simulation
 
-__all__ = ["Wafer", "load_recipe", "run_recipe"]
-__version__ = "0.1.0"
+__all__ = ["Grid", "Simulation", "build_simulation", "load_recipe", "run_recipe"]
+__version__ = "0.2.0"

@@ -91,58 +91,6 @@ def get_dopant(name: str) -> Dopant:
 
 
 # ---------------------------------------------------------------------------
-# Ion implantation
-# ---------------------------------------------------------------------------
-
-def gaussian_implant(depth_nm: np.ndarray, dose: float, rp_nm: float, drp_nm: float) -> np.ndarray:
-    """Gaussian implant profile in cm^-3 for a dose in cm^-2."""
-    drp_cm = drp_nm / NM_PER_CM
-    peak = dose / (math.sqrt(2 * math.pi) * drp_cm)
-    return peak * np.exp(-((depth_nm - rp_nm) ** 2) / (2 * drp_nm**2))
-
-
-# ---------------------------------------------------------------------------
-# Diffusion (Crank-Nicolson, zero-flux boundaries)
-# ---------------------------------------------------------------------------
-
-def _thomas(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -> np.ndarray:
-    """Solve a tridiagonal system (sub a, diag b, super c)."""
-    n = len(d)
-    cp = np.empty(n)
-    dp = np.empty(n)
-    cp[0] = c[0] / b[0]
-    dp[0] = d[0] / b[0]
-    for i in range(1, n):
-        m = b[i] - a[i] * cp[i - 1]
-        cp[i] = c[i] / m if i < n - 1 else 0.0
-        dp[i] = (d[i] - a[i] * dp[i - 1]) / m
-    x = np.empty(n)
-    x[-1] = dp[-1]
-    for i in range(n - 2, -1, -1):
-        x[i] = dp[i] - cp[i] * x[i + 1]
-    return x
-
-
-def diffuse_step(conc: np.ndarray, d_nm2_s: float, dx_nm: float, dt_s: float) -> np.ndarray:
-    """Advance one Crank-Nicolson step of dC/dt = D d2C/dx2 with no flux at both ends."""
-    n = len(conc)
-    r = d_nm2_s * dt_s / dx_nm**2
-    # Implicit side: -r/2 C[i-1] + (1+r) C[i] - r/2 C[i+1]
-    a = np.full(n, -r / 2)
-    b = np.full(n, 1 + r)
-    c = np.full(n, -r / 2)
-    # Zero flux via mirrored ghost nodes
-    c[0] = -r
-    a[-1] = -r
-    # Explicit side
-    rhs = (1 - r) * conc
-    rhs[1:-1] += r / 2 * (conc[:-2] + conc[2:])
-    rhs[0] += r * conc[1]
-    rhs[-1] += r * conc[-2]
-    return _thomas(a, b, c, rhs)
-
-
-# ---------------------------------------------------------------------------
 # Thermal oxidation (Deal-Grove)
 # ---------------------------------------------------------------------------
 
@@ -167,11 +115,36 @@ def deal_grove_coefficients(temp_c: float, ambient: str, orientation: str = "100
     return b, ba
 
 
-def deal_grove_grow(tox_nm: float, dt_min: float, b_um2_h: float, ba_um_h: float) -> float:
-    """Oxide thickness (nm) after growing for dt from an existing thickness."""
+def deal_grove_grow(tox_nm, dt_min: float, b_um2_h: float, ba_um_h: float):
+    """Oxide thickness (nm) after growing for dt from an existing thickness.
+
+    Accepts a scalar or an array of starting thicknesses.
+    """
     a_um = b_um2_h / ba_um_h
-    x0 = tox_nm / 1000
+    x0 = np.asarray(tox_nm, dtype=float) / 1000
     dt_h = dt_min / 60
     rhs = x0**2 + a_um * x0 + b_um2_h * dt_h
-    x1 = (-a_um + math.sqrt(a_um**2 + 4 * rhs)) / 2
-    return x1 * 1000
+    x1 = (-a_um + np.sqrt(a_um**2 + 4 * rhs)) / 2
+    out = x1 * 1000
+    return float(out) if out.ndim == 0 else out
+
+
+# ---------------------------------------------------------------------------
+# Materials
+# ---------------------------------------------------------------------------
+
+GAS, SI, OXIDE, POLY = 0, 1, 2, 3
+MATERIAL_NAMES = {GAS: "gas", SI: "Si", OXIDE: "SiO2", POLY: "poly-Si"}
+MATERIAL_CODES = {v.lower(): k for k, v in MATERIAL_NAMES.items()} | {"oxide": OXIDE, "poly": POLY}
+
+# Dopant diffusivity in each material relative to crystalline Si (rough values).
+DIFFUSIVITY_FACTOR = {GAS: 0.0, SI: 1.0, OXIDE: 1e-4, POLY: 10.0}
+
+
+def material_code(name: str | int) -> int:
+    if isinstance(name, int):
+        return name
+    try:
+        return MATERIAL_CODES[name.lower()]
+    except KeyError:
+        raise ValueError(f"unknown material {name!r}; choose from {sorted(MATERIAL_CODES)}") from None
