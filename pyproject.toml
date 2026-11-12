@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semidesign"
+version = "0.1.0"
+description = "A small 1D silicon process simulator (implant, diffusion, oxidation)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26", "matplotlib>=3.8"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+semidesign = "semidesign.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
