@@ -1,18 +1,22 @@
-name = "CIS pixel photodiode (2D cross-section)"
+name = "CIS pixel: photodiode, transfer gate and floating diffusion (2D cross-section)"
 
-# One 1.1 um pixel. The box edges are mirrors, so the half trench at each
-# edge is half of the trench shared with the neighbouring pixel.
+# One 1.1 um pixel cut through photodiode (PD), transfer gate (TG) and
+# floating diffusion (FD). The box edges are mirrors, so the half trench at
+# each edge is half of the trench shared with the neighbouring pixel.
+#
+#   x (um)  0    0.05            0.80      0.96      1.05 1.1
+#           | DTI |      PD       |   TG    |   FD    | DTI |
 [grid]
 width_nm = 1100
 depth_nm = 3000
 spacing_nm = 10
-headroom_nm = 300
+headroom_nm = 400
 
 [substrate]
 dopant = "B"
 conc = 1e15          # lightly doped p-type silicon
 
-# 1-4: deep trench isolation: etch, thermal liner on the side walls, oxide fill, polish
+# --- deep trench isolation: etch, thermal liner on the side walls, oxide fill, polish
 [[step]]
 type = "etch"
 depth_nm = 2500
@@ -35,45 +39,75 @@ note = "fill the rest of the trench"
 type = "planarize"
 level_nm = 0
 
-# 5-7: the n-type bucket that collects electrons, built from three energies
+# --- photodiode: n-type bucket from three energies (resist mask up to the TG edge)
 [[step]]
 type = "implant"
 dopant = "P"
 dose = 1.5e12
 energy_kev = 1200
-openings = [[150, 950]]
+openings = [[150, 780]]
 
 [[step]]
 type = "implant"
 dopant = "P"
 dose = 2e12
 energy_kev = 500
-openings = [[150, 950]]
+openings = [[150, 790]]
 
 [[step]]
 type = "implant"
 dopant = "P"
 dose = 3e12
 energy_kev = 150
-openings = [[150, 950]]
+openings = [[150, 800]]
 
-# 8: thin p-type lid at the surface (keeps the bucket away from the surface)
+# --- p-type layer under the TG and around the FD: the wall between PD and FD
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 3e12
+energy_kev = 30
+openings = [[800, 1050]]
+
+# --- transfer gate: gate oxide, poly-Si, patterned to the gate
+[[step]]
+type = "deposit"
+material = "oxide"
+thickness_nm = 10
+conformal = false
+note = "gate oxide (a few nm in practice; one 10 nm cell at this grid spacing)"
+
+[[step]]
+type = "deposit"
+material = "poly"
+thickness_nm = 150
+conformal = false
+
+[[step]]
+type = "etch"
+depth_nm = 200
+materials = ["poly"]
+openings = [[0, 800], [960, 1100]]
+note = "leave poly only over the gate"
+
+# --- implants aligned by the gate itself: the poly stops the ions above it
 [[step]]
 type = "implant"
 dopant = "B"
 dose = 1e13
 energy_kev = 10
-openings = [[60, 900]]
+openings = [[60, 840]]
+note = "p+ lid over the PD, aligned to the TG edge"
 
-# 9: n+ read-out node next to the bucket
 [[step]]
 type = "implant"
 dopant = "As"
 dose = 2e15
 energy_kev = 30
-openings = [[960, 1040]]
+openings = [[920, 1040]]
+note = "n+ FD, aligned to the other TG edge"
 
-# 10: activation anneal (implant damage makes the first seconds count most)
+# --- activation anneal (implant damage makes the first seconds count most)
 [[step]]
 type = "anneal"
 temp_c = 1000

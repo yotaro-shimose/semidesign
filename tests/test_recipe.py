@@ -23,6 +23,12 @@ def test_example_recipe_builds_a_pinned_photodiode(tmp_path):
     # the trench is lined and filled with oxide down to its bottom
     edge = sim.mat[0]
     assert (edge[(sim.grid.z_centers > 0) & (sim.grid.z_centers < 2400)] == OXIDE).all()
+    # just below the surface: p-type wall under the transfer gate, n+ floating diffusion
+    net = sim.net_doping()
+    near_surface = lambda x: net[sim.column(x)][np.flatnonzero(sim.mat[sim.column(x)] == 1)[1]]
+    assert near_surface(880) < 0
+    assert near_surface(1000) > 1e19
+    assert (sim.mat[sim.column(880)] == 3).any() and not (sim.mat[sim.column(600)] == 3).any()
 
 
 def test_planarize_and_etch_clear_dopant_and_damage():
