@@ -11,8 +11,11 @@ All lengths are in nm.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cached_property
 
 import numpy as np
+
+from .fv import face_pairs
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,8 @@ class Grid:
     def __post_init__(self) -> None:
         if not self.lateral_nm:
             raise ValueError("need at least one lateral axis (use 2D or 3D)")
+        if self.headroom_nm < self.spacing_nm:
+            raise ValueError("headroom_nm must be at least one grid spacing (the wafer needs a surface)")
         h = self.spacing_nm
         lat = tuple(max(1, round(w / h)) for w in self.lateral_nm)
         nz = max(2, round((self.depth_nm + self.headroom_nm) / h))
@@ -39,6 +44,15 @@ class Grid:
     @property
     def lateral_shape(self) -> tuple[int, ...]:
         return self.shape[:-1]
+
+    @property
+    def periodic_axes(self) -> tuple[int, ...]:
+        return tuple(range(self.ndim - 1)) if self.periodic else ()
+
+    @cached_property
+    def faces(self) -> tuple[np.ndarray, np.ndarray]:
+        """Flat indices of all pairs of cells sharing a face (see fv.face_pairs)."""
+        return face_pairs(self.shape, self.periodic_axes)
 
     @property
     def n_cells(self) -> int:

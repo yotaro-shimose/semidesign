@@ -1,89 +1,103 @@
-"""Implicit dopant diffusion on a 2D/3D grid with material-dependent diffusivity.
+"""Dopant transport: diffusion in every material and exchange across interfaces.
 
-Finite-volume form of dC/dt = div(D grad C) solved with backward Euler.
-Face diffusivity is the harmonic mean of the two cells, so flux into gas
-(D = 0) is zero and flux into oxide is strongly suppressed. Outer boundaries
-are zero-flux; lateral edges optionally wrap around (periodic pixels).
+Each dopant obeys  w dU/dt = div(kappa grad U)  with  C = w U  and  kappa = D w,
+where w is the material's capacity (dopants.Dopant.capacity_by_material).
+U is continuous across interfaces in equilibrium, so segregation
+(C_Si / C_SiO2 = m) emerges from the equations instead of a special rule.
+Face conductances are harmonic means of kappa; outer edges are closed,
+lateral edges optionally periodic. Time stepping is backward Euler.
 
-Solver: sparse direct LU for small problems (typical 2D), conjugate gradient
-with a diagonal preconditioner for large ones (typical 3D), so memory stays
-proportional to the number of cells.
+In silicon the diffusivity is multiplied by the point-defect factor when an
+interstitial supersaturation field is given (transient enhanced diffusion).
+
+A moving interface (silicon turning into oxide) is handled by
+segregate_at_new_oxide, which applies the same equilibrium locally.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import scipy.sparse as sp
-import scipy.sparse.linalg as spla
 
-DIRECT_SOLVER_MAX_CELLS = 400_000
-
-
-def laplacian(d_cell: np.ndarray, h_nm: float, periodic_axes: tuple[int, ...] = ()) -> sp.csr_matrix:
-    """Sparse operator L with (L c)_i = sum_faces g_f (c_j - c_i), g in 1/s."""
-    shape = d_cell.shape
-    n = d_cell.size
-    idx = np.arange(n).reshape(shape)
-    rows, cols, vals = [], [], []
-
-    def add_faces(d0, d1, i0, i1):
-        g = np.zeros_like(d0)
-        ok = (d0 > 0) & (d1 > 0)
-        g[ok] = 2 * d0[ok] * d1[ok] / (d0[ok] + d1[ok])
-        g /= h_nm**2
-        g, i0, i1 = g.ravel(), i0.ravel(), i1.ravel()
-        keep = g > 0
-        g, i0, i1 = g[keep], i0[keep], i1[keep]
-        rows.extend([i0, i1, i0, i1])
-        cols.extend([i1, i0, i0, i1])
-        vals.extend([g, g, -g, -g])
-
-    for ax in range(len(shape)):
-        if shape[ax] < 2:
-            continue
-        lo = [slice(None)] * len(shape)
-        hi = [slice(None)] * len(shape)
-        lo[ax] = slice(0, -1)
-        hi[ax] = slice(1, None)
-        add_faces(d_cell[tuple(lo)], d_cell[tuple(hi)], idx[tuple(lo)], idx[tuple(hi)])
-        if ax in periodic_axes and shape[ax] > 2:
-            first = [slice(None)] * len(shape)
-            last = [slice(None)] * len(shape)
-            first[ax] = slice(0, 1)
-            last[ax] = slice(-1, None)
-            add_faces(d_cell[tuple(last)], d_cell[tuple(first)], idx[tuple(last)], idx[tuple(first)])
-
-    if not rows:
-        return sp.csr_matrix((n, n))
-    r = np.concatenate(rows)
-    c = np.concatenate(cols)
-    v = np.concatenate(vals)
-    return sp.csr_matrix((v, (r, c)), shape=(n, n))
+from . import fv
+from .constants import NM2_PER_CM2
+from .dopants import get_dopant
+from .grid import Grid
+from .materials import OXIDE, SI
 
 
-class ImplicitDiffuser:
-    """Backward-Euler stepper for one diffusivity field and fixed time step."""
+class DopantTransport:
+    """Backward-Euler diffusion of all dopants at one temperature.
 
-    def __init__(self, d_cell_nm2_s: np.ndarray, h_nm: float, dt_s: float,
-                 periodic_axes: tuple[int, ...] = (), force: str | None = None):
-        self.shape = d_cell_nm2_s.shape
-        lap = laplacian(d_cell_nm2_s, h_nm, periodic_axes)
-        n = d_cell_nm2_s.size
-        self.a = (sp.identity(n, format="csr") - dt_s * lap).tocsc()
-        method = force or ("direct" if n <= DIRECT_SOLVER_MAX_CELLS else "cg")
-        self.method = method
-        if method == "direct":
-            self._lu = spla.splu(self.a)
-        else:
-            inv_diag = 1.0 / self.a.diagonal()
-            self._m = spla.LinearOperator((n, n), matvec=lambda x: inv_diag * x)
+    The factorized system is reused across steps while the geometry, the time
+    step and the defect field are unchanged.
+    """
 
-    def step(self, c: np.ndarray) -> np.ndarray:
-        b = c.ravel()
-        if self.method == "direct":
-            x = self._lu.solve(b)
-        else:
-            x, info = spla.cg(self.a, b, x0=b, rtol=1e-10, atol=0.0, M=self._m, maxiter=5000)
-            if info != 0:
-                raise RuntimeError(f"diffusion solver did not converge (info={info})")
-        return x.reshape(self.shape)
+    def __init__(self, grid: Grid, temp_c: float):
+        self.grid = grid
+        self.temp_c = temp_c
+        self.i, self.j = grid.faces
+        self._cache: dict[str, tuple[np.ndarray, float, fv.SPDSolver, np.ndarray]] = {}
+
+    def step(self, conc: dict[str, np.ndarray], mat: np.ndarray, dt_s: float,
+             supersaturation: np.ndarray | None = None) -> str:
+        """Advance every dopant by dt in place. Returns the solver method used."""
+        method = "none"
+        for name, c in conc.items():
+            solver, w = self._system(name, mat, dt_s, supersaturation)
+            u = solver.solve(c.ravel())
+            conc[name] = np.maximum(w * u, 0.0).reshape(c.shape)
+            method = solver.method
+        return method
+
+    def _system(self, name, mat, dt_s, supersaturation):
+        cached = self._cache.get(name)
+        if (supersaturation is None and cached is not None and cached[1] == dt_s
+                and np.array_equal(cached[0], mat)):
+            return cached[2], cached[3]
+        d = get_dopant(name)
+        m = mat.ravel()
+        w = d.capacity_by_material()[m]
+        diff = d.diffusivity_by_material(self.temp_c)[m] * NM2_PER_CM2  # nm^2/s
+        if supersaturation is not None:
+            si = m == SI
+            diff[si] *= d.point_defect_factor(supersaturation.ravel()[si])
+        kappa = diff * w
+        g = fv.harmonic_mean(kappa[self.i], kappa[self.j]) / self.grid.spacing_nm**2
+        lap = fv.laplacian(m.size, self.i, self.j, g)
+        solver = fv.SPDSolver(sp.diags(w) - dt_s * lap)
+        if supersaturation is None:
+            self._cache[name] = (mat.copy(), dt_s, solver, w)
+        return solver, w
+
+
+def segregate_at_new_oxide(conc: dict[str, np.ndarray], mat: np.ndarray,
+                           converted: np.ndarray, i: np.ndarray, j: np.ndarray) -> None:
+    """Redistribute dopant where silicon has just turned into oxide.
+
+    The new oxide cell and the silicon cells it touches come to local
+    segregation equilibrium (equal U = C / w), conserving the dopant. This is
+    the snowplow effect of a moving interface: donors (m > 1) are pushed into
+    the silicon ahead of the front, boron (m < 1) is drawn into the oxide.
+    """
+    conv = converted.ravel()
+    if not conv.any():
+        return
+    m = mat.ravel()
+    si = m == SI
+    pairs = np.concatenate([np.stack([i, j], 1), np.stack([j, i], 1)])
+    pairs = pairs[conv[pairs[:, 0]] & si[pairs[:, 1]]]  # (new oxide cell, touching Si cell)
+    if pairs.size == 0:
+        return
+    order = np.argsort(pairs[:, 0], kind="stable")
+    pairs = pairs[order]
+    cells, start = np.unique(pairs[:, 0], return_index=True)
+    groups = np.split(pairs[:, 1], start[1:])
+    for name, c in conc.items():
+        w_ox = get_dopant(name).capacity_by_material()[OXIDE]
+        flat = c.reshape(-1)
+        for cell, nbrs in zip(cells, groups):
+            total = flat[cell] + flat[nbrs].sum()
+            u = total / (w_ox + nbrs.size)
+            flat[cell] = w_ox * u
+            flat[nbrs] = u

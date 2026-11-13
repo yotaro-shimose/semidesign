@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semidesign"
-version = "0.2.0"
+version = "0.3.0"
 description = "2D/3D silicon process simulator for image-sensor pixels"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,3 +18,9 @@ semidesign = "semidesign.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+semidesign = ["data/*.csv", "data/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]

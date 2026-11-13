@@ -10,7 +10,7 @@ import numpy as np
 from scipy import ndimage
 
 from .grid import Grid
-from .physics import GAS
+from .materials import GAS
 
 
 def top_solid_index(mat: np.ndarray) -> np.ndarray:

@@ -5,4 +5,4 @@ from .recipe import build_simulation, load_recipe, run_recipe
 from .simulation import Simulation
 
 __all__ = ["Grid", "Simulation", "build_simulation", "load_recipe", "run_recipe"]
-__version__ = "0.2.0"
+__version__ = "0.3.0"

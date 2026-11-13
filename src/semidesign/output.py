@@ -7,13 +7,14 @@ from pathlib import Path
 
 import numpy as np
 
-from .physics import GAS, OXIDE, POLY, SI
+from .materials import GAS, NITRIDE, OXIDE, SI
 from .simulation import Simulation
 
 
 def save_arrays(sim: Simulation, path: Path) -> None:
     g = sim.grid
-    arrays = {"material": sim.mat, "net_doping": sim.net_doping(), "z_nm": g.z_centers}
+    arrays = {"material": sim.mat, "net_doping": sim.net_doping(), "z_nm": g.z_centers,
+              "interstitial_clusters": sim.defects.clusters}
     for a in range(g.ndim - 1):
         arrays[f"lateral{a}_nm"] = g.lateral_centers(a)
     for k, v in sim.conc.items():
@@ -27,6 +28,7 @@ def save_snapshots(sim: Simulation, folder: Path) -> list[str]:
     for i, s in enumerate(sim.snapshots):
         name = f"step_{i:02d}.npz"
         np.savez_compressed(folder / name, label=np.array(s.label), material=s.mat,
+                            interstitial_clusters=s.clusters,
                             **{f"conc_{k}": v for k, v in s.conc.items()})
         names.append(name)
     return names
@@ -62,8 +64,8 @@ def plot_cross_section(sim: Simulation, path: Path, title: str) -> None:
 
     fig_w = 4 + 3 * g.lateral_nm[0] / max(g.lateral_nm[0], g.depth_nm)
     fig, ax = plt.subplots(figsize=(fig_w + 2, 7))
-    mat_rgb = ListedColormap(["#FFFFFF", "#F1EFE8", "#E6DFC8", "#B4B2A9"])
-    ax.imshow(mat, cmap=mat_rgb, vmin=GAS - 0.5, vmax=POLY + 0.5, extent=ext,
+    mat_rgb = ListedColormap(["#FFFFFF", "#F1EFE8", "#E6DFC8", "#B4B2A9", "#C9D6C3"])
+    ax.imshow(mat, cmap=mat_rgb, vmin=GAS - 0.5, vmax=NITRIDE + 0.5, extent=ext,
               aspect="auto", interpolation="nearest")
     im = ax.imshow(signed, cmap="RdBu_r", vmin=-6, vmax=6, extent=ext, aspect="auto",
                    interpolation="nearest")

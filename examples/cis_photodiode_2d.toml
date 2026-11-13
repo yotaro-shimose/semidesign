@@ -1,50 +1,63 @@
 name = "CIS pixel photodiode (2D cross-section)"
 
-# One pixel, 1.1 um wide, mirrored at both edges (neighbours are copies).
+# One 1.1 um pixel. The box edges are mirrors, so the half trench at each
+# edge is half of the trench shared with the neighbouring pixel.
 [grid]
 width_nm = 1100
 depth_nm = 3000
 spacing_nm = 10
-headroom_nm = 200
+headroom_nm = 300
 
 [substrate]
 dopant = "B"
 conc = 1e15          # lightly doped p-type silicon
 
-# 1-3: deep trench between pixels (half of a 100 nm trench at each edge)
+# 1-4: deep trench isolation: etch, thermal liner on the side walls, oxide fill, polish
 [[step]]
 type = "etch"
 depth_nm = 2500
 openings = [[0, 50], [1050, 1100]]
-note = "pixel isolation trench"
+
+[[step]]
+type = "oxidize"
+ambient = "dry"
+temp_c = 1050
+time_min = 30
+note = "liner oxide on the trench side walls"
 
 [[step]]
 type = "deposit"
 material = "oxide"
 thickness_nm = 60
-note = "fill the trench with oxide"
+note = "fill the rest of the trench"
 
 [[step]]
 type = "planarize"
 level_nm = 0
-note = "polish back to the silicon surface"
 
-# 4-5: the n-type "bucket" that collects electrons (deep + shallow implant)
+# 5-7: the n-type bucket that collects electrons, built from three energies
 [[step]]
 type = "implant"
 dopant = "P"
 dose = 1.5e12
-energy_kev = 600
+energy_kev = 1200
 openings = [[150, 950]]
 
 [[step]]
 type = "implant"
 dopant = "P"
-dose = 4e12
-energy_kev = 200
+dose = 2e12
+energy_kev = 500
 openings = [[150, 950]]
 
-# 6: thin p-type "lid" at the surface (suppresses electrons appearing in the dark)
+[[step]]
+type = "implant"
+dopant = "P"
+dose = 3e12
+energy_kev = 150
+openings = [[150, 950]]
+
+# 8: thin p-type lid at the surface (keeps the bucket away from the surface)
 [[step]]
 type = "implant"
 dopant = "B"
@@ -52,7 +65,7 @@ dose = 1e13
 energy_kev = 10
 openings = [[60, 900]]
 
-# 7: n+ read-out node next to the bucket
+# 9: n+ read-out node next to the bucket
 [[step]]
 type = "implant"
 dopant = "As"
@@ -60,8 +73,8 @@ dose = 2e15
 energy_kev = 30
 openings = [[960, 1040]]
 
-# 8: activation anneal
+# 10: activation anneal (implant damage makes the first seconds count most)
 [[step]]
 type = "anneal"
 temp_c = 1000
-time_min = 1
+time_min = 0.5

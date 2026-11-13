@@ -67,6 +67,9 @@ def run_step(sim: Simulation, step: dict[str, Any], index: int) -> None:
     missing = [k for k in STEP_TYPES[kind] if k not in s]
     if missing:
         raise ValueError(f"step {index} ({kind}): missing {missing}")
+    if kind == "oxidize" and "openings" in s:
+        raise ValueError(f"step {index} (oxidize): openings are not supported; "
+                         "deposit and pattern a nitride mask instead")
     s.pop("note", None)
     try:
         getattr(sim, kind)(**s)
