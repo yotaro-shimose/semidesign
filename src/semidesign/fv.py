@@ -114,15 +114,20 @@ class Region:
 class SPDSolver:
     """Solver for a fixed symmetric positive definite matrix.
 
-    Small systems (typical 2D) are factorized once and reused; large ones
-    (typical 3D) use conjugate gradients with a diagonal preconditioner so
-    memory stays proportional to the number of cells.
+    factorize=True: direct sparse factorization (fits typical 2D sizes). Right
+    for steady-state problems, where iterative methods converge slowly, and
+    for any system solved many times.
+    factorize=False: conjugate gradients with a diagonal preconditioner. Right
+    for a time-step matrix used once: it is close to the identity, so a few
+    iterations suffice.
+    Systems too large to factorize (typical 3D) always use conjugate gradients,
+    whose memory stays proportional to the number of cells.
     """
 
-    def __init__(self, a: sp.spmatrix):
+    def __init__(self, a: sp.spmatrix, factorize: bool = True):
         n = a.shape[0]
         self.n = n
-        if n <= DIRECT_SOLVER_MAX_CELLS:
+        if factorize and n <= DIRECT_SOLVER_MAX_CELLS:
             self.method = "direct"
             self._lu = spla.splu(a.tocsc())
         else:

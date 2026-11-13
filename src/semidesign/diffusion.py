@@ -16,6 +16,8 @@ segregate_at_new_oxide, which applies the same equilibrium locally.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import scipy.sparse as sp
 
@@ -29,15 +31,16 @@ from .materials import OXIDE, SI
 class DopantTransport:
     """Backward-Euler diffusion of all dopants at one temperature.
 
-    The factorized system is reused across steps while the geometry, the time
-    step and the defect field are unchanged.
+    A new system (geometry, time step or defect field changed) is solved
+    iteratively; once the same system comes back, it is factorized and the
+    factorization reused.
     """
 
     def __init__(self, grid: Grid, temp_c: float):
         self.grid = grid
         self.temp_c = temp_c
         self.i, self.j = grid.faces
-        self._cache: dict[str, tuple[np.ndarray, float, fv.SPDSolver, np.ndarray]] = {}
+        self._cache: dict[str, _CachedSystem] = {}
 
     def step(self, conc: dict[str, np.ndarray], mat: np.ndarray, dt_s: float,
              supersaturation: np.ndarray | None = None) -> str:
@@ -45,16 +48,27 @@ class DopantTransport:
         method = "none"
         for name, c in conc.items():
             solver, w = self._system(name, mat, dt_s, supersaturation)
-            u = solver.solve(c.ravel())
+            u = solver.solve(c.ravel(), x0=c.ravel() / w)
             conc[name] = np.maximum(w * u, 0.0).reshape(c.shape)
             method = solver.method
         return method
 
-    def _system(self, name, mat, dt_s, supersaturation):
+    def _system(self, name, mat, dt_s, supersaturation) -> tuple[fv.SPDSolver, np.ndarray]:
         cached = self._cache.get(name)
-        if (supersaturation is None and cached is not None and cached[1] == dt_s
-                and np.array_equal(cached[0], mat)):
-            return cached[2], cached[3]
+        if supersaturation is None and cached is not None and cached.matches(mat, dt_s):
+            if not cached.factorized:
+                cached.solver = fv.SPDSolver(cached.matrix, factorize=True)
+                cached.factorized = True
+            return cached.solver, cached.w
+        matrix, w = self._matrix(name, mat, dt_s, supersaturation)
+        solver = fv.SPDSolver(matrix, factorize=False)
+        if supersaturation is None:
+            self._cache[name] = _CachedSystem(mat.copy(), dt_s, matrix, w, solver)
+        else:
+            self._cache.pop(name, None)
+        return solver, w
+
+    def _matrix(self, name, mat, dt_s, supersaturation):
         d = get_dopant(name)
         m = mat.ravel()
         w = d.capacity_by_material()[m]
@@ -65,10 +79,20 @@ class DopantTransport:
         kappa = diff * w
         g = fv.harmonic_mean(kappa[self.i], kappa[self.j]) / self.grid.spacing_nm**2
         lap = fv.laplacian(m.size, self.i, self.j, g)
-        solver = fv.SPDSolver(sp.diags(w) - dt_s * lap)
-        if supersaturation is None:
-            self._cache[name] = (mat.copy(), dt_s, solver, w)
-        return solver, w
+        return sp.diags(w) - dt_s * lap, w
+
+
+@dataclass
+class _CachedSystem:
+    mat: np.ndarray
+    dt_s: float
+    matrix: sp.spmatrix
+    w: np.ndarray
+    solver: fv.SPDSolver
+    factorized: bool = False
+
+    def matches(self, mat: np.ndarray, dt_s: float) -> bool:
+        return self.dt_s == dt_s and np.array_equal(self.mat, mat)
 
 
 def segregate_at_new_oxide(conc: dict[str, np.ndarray], mat: np.ndarray,
