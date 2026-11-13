@@ -1,10 +1,11 @@
 """Finite-volume building blocks shared by every transport model.
 
 Unknowns live in cells; neighbouring cells exchange through the face between
-them. A model supplies one conductance per face (and its own boundary terms);
-this module enumerates faces, assembles the sparse operator, restricts it to a
-region of cells, and solves the symmetric positive definite systems that
-result.
+them. A model supplies a property per cell; the face conductance is the
+series combination of the two half cells (exact for a layered medium), so the
+same code works on uniform and graded grids. This module enumerates faces,
+assembles the sparse operator, restricts it to a region of cells, and solves
+the symmetric positive definite systems that result.
 """
 
 from __future__ import annotations
@@ -18,32 +19,34 @@ import scipy.sparse.linalg as spla
 DIRECT_SOLVER_MAX_CELLS = 400_000
 
 
-def face_pairs(shape: tuple[int, ...], periodic_axes: tuple[int, ...] = ()) -> tuple[np.ndarray, np.ndarray]:
-    """Flat indices (i, j) of every pair of cells that share a face."""
+def face_pairs(shape: tuple[int, ...], periodic_axes: tuple[int, ...] = ()
+               ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Flat indices (i, j) of every pair of cells that share a face, and each face's axis."""
     idx = np.arange(int(np.prod(shape))).reshape(shape)
-    first, second = [], []
+    first, second, axes = [], [], []
+
+    def add(a, b, ax):
+        first.append(a.ravel())
+        second.append(b.ravel())
+        axes.append(np.full(a.size, ax))
+
     for ax, n in enumerate(shape):
         if n < 2:
             continue
-        lo = [slice(None)] * len(shape)
-        hi = [slice(None)] * len(shape)
-        lo[ax], hi[ax] = slice(0, -1), slice(1, None)
-        first.append(idx[tuple(lo)].ravel())
-        second.append(idx[tuple(hi)].ravel())
+        add(np.take(idx, range(n - 1), axis=ax), np.take(idx, range(1, n), axis=ax), ax)
         if ax in periodic_axes and n > 2:
-            last = np.take(idx, [n - 1], axis=ax).ravel()
-            head = np.take(idx, [0], axis=ax).ravel()
-            first.append(last)
-            second.append(head)
-    return np.concatenate(first), np.concatenate(second)
+            add(np.take(idx, [n - 1], axis=ax), np.take(idx, [0], axis=ax), ax)
+    return np.concatenate(first), np.concatenate(second), np.concatenate(axes)
 
 
-def harmonic_mean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Face value between two cells; zero if either side is zero."""
-    out = np.zeros(np.broadcast(a, b).shape)
-    ok = (a > 0) & (b > 0)
-    a, b = np.broadcast_to(a, out.shape), np.broadcast_to(b, out.shape)
-    out[ok] = 2 * a[ok] * b[ok] / (a[ok] + b[ok])
+def series_conductance(k_i: np.ndarray, k_j: np.ndarray, half_i: np.ndarray,
+                       half_j: np.ndarray, area: np.ndarray) -> np.ndarray:
+    """Face conductance area / (half_i / k_i + half_j / k_j); zero if either k is zero."""
+    k_i, k_j, half_i, half_j, area = np.broadcast_arrays(
+        *(np.asarray(v, dtype=float) for v in (k_i, k_j, half_i, half_j, area)))
+    out = np.zeros(k_i.shape)
+    ok = (k_i > 0) & (k_j > 0)
+    out[ok] = area[ok] / (half_i[ok] / k_i[ok] + half_j[ok] / k_j[ok])
     return out
 
 
@@ -76,6 +79,7 @@ class Region:
     edge_cell: np.ndarray
     edge_out: np.ndarray
     edge_face: np.ndarray
+    edge_on_i: np.ndarray  # the region cell is the face's i cell
 
     @classmethod
     def of(cls, member: np.ndarray, i: np.ndarray, j: np.ndarray) -> "Region":
@@ -93,6 +97,7 @@ class Region:
             edge_cell=np.concatenate([local[i[edge_i]], local[j[edge_j]]]),
             edge_out=np.concatenate([j[edge_i], i[edge_j]]),
             edge_face=np.concatenate([edge_i, edge_j]),
+            edge_on_i=np.concatenate([np.ones(edge_i.size, bool), np.zeros(edge_j.size, bool)]),
         )
 
     @property
@@ -101,6 +106,11 @@ class Region:
 
     def laplacian(self, g_inner) -> sp.csr_matrix:
         return laplacian(self.n, self.inner_a, self.inner_b, g_inner)
+
+    def edge_side(self, on_i: np.ndarray, on_j: np.ndarray) -> np.ndarray:
+        """Per edge face, the value belonging to the region-side cell."""
+        f = self.edge_face
+        return np.where(self.edge_on_i, on_i[f], on_j[f])
 
     def edge_sum(self, values: np.ndarray, where: np.ndarray | None = None) -> np.ndarray:
         """Sum per region cell of a quantity given per edge face."""

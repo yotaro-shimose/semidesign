@@ -51,10 +51,8 @@ def plot_cross_section(sim: Simulation, path: Path, title: str) -> None:
     g = sim.grid
     net = _section(sim, sim.net_doping()).T  # rows = depth
     mat = _section(sim, sim.mat).T
-    x = g.lateral_centers(0)
-    z = g.z_centers
-    ext = [0, g.lateral_nm[0] / 1000, z[-1] / 1000 + g.spacing_nm / 2000,
-           z[0] / 1000 - g.spacing_nm / 2000]
+    x, z = g.centers(0), g.z_centers
+    xe, ze = g.edges[0] / 1000, g.z_edges / 1000
 
     # signed log scale: +log10 for n-type, -log10 for p-type, |C| < 1e14 -> 0
     with np.errstate(divide="ignore"):
@@ -65,10 +63,9 @@ def plot_cross_section(sim: Simulation, path: Path, title: str) -> None:
     fig_w = 4 + 3 * g.lateral_nm[0] / max(g.lateral_nm[0], g.depth_nm)
     fig, ax = plt.subplots(figsize=(fig_w + 2, 7))
     mat_rgb = ListedColormap(["#FFFFFF", "#F1EFE8", "#E6DFC8", "#B4B2A9", "#C9D6C3"])
-    ax.imshow(mat, cmap=mat_rgb, vmin=GAS - 0.5, vmax=NITRIDE + 0.5, extent=ext,
-              aspect="auto", interpolation="nearest")
-    im = ax.imshow(signed, cmap="RdBu_r", vmin=-6, vmax=6, extent=ext, aspect="auto",
-                   interpolation="nearest")
+    ax.pcolormesh(xe, ze, mat, cmap=mat_rgb, vmin=GAS - 0.5, vmax=NITRIDE + 0.5)
+    im = ax.pcolormesh(xe, ze, signed, cmap="RdBu_r", vmin=-6, vmax=6)
+    ax.set_ylim(ze[-1], ze[0])
     xx, zz = np.meshgrid(x / 1000, z / 1000)
     netm = np.ma.masked_where(mat != SI, net)
     if (netm > 0).any() and (netm < 0).any():

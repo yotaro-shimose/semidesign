@@ -152,7 +152,7 @@ class Simulation:
                 dt = min(dt, front.stable_step(consume, fill))
                 converted = front.advance(self.mat, consume, fill, dt)
                 if converted.any():
-                    segregate_at_new_oxide(self.conc, self.mat, converted, front.i, front.j)
+                    segregate_at_new_oxide(self.grid, self.conc, self.mat, converted)
                     self.defects.remove(converted)
             supersaturation = self.defects.advance(self.mat, temp_c, dt)
             if supersaturation is not None:
@@ -191,7 +191,7 @@ class Simulation:
 
     def _areal(self, field_cm3: np.ndarray) -> float:
         """Amount per unit wafer area (cm^-2), averaged over the box."""
-        return float(field_cm3.sum() * self.grid.cell_volume_cm / self._lateral_area_cm2())
+        return float((field_cm3 * self.grid.volumes_cm).sum() / self._lateral_area_cm2())
 
     # ------------------------------------------------------------- analysis
 
@@ -233,7 +233,7 @@ class Simulation:
         col = self.mat[self.column(pos_nm)]
         si = np.flatnonzero(col == SI)
         top = si[0] if si.size else col.size
-        return float((col[:top] == OXIDE).sum() * self.grid.spacing_nm)
+        return float(self.grid.widths(-1)[:top][col[:top] == OXIDE].sum())
 
     def material_fractions(self) -> dict[str, float]:
         return {name: float((self.mat == code).mean()) for code, name in NAMES.items()}

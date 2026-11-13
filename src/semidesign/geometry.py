@@ -1,13 +1,13 @@
 """Cell-based geometry operations: etch, deposit, planarize.
 
-The structure is a material code per cell (see physics.GAS/SI/OXIDE/POLY).
-Surfaces are cell faces, so features are resolved to one grid spacing.
+The structure is a material code per cell (see materials.py). Surfaces are
+cell faces, so features are resolved to the local cell size.
 """
 
 from __future__ import annotations
 
 import numpy as np
-from scipy import ndimage
+from scipy.spatial import cKDTree
 
 from .grid import Grid
 from .materials import GAS
@@ -24,19 +24,24 @@ def top_solid_index(mat: np.ndarray) -> np.ndarray:
     return idx
 
 
+def depth_below_top(grid: Grid, mat: np.ndarray) -> np.ndarray:
+    """Depth (nm) of each cell's upper face below the top solid surface of its column."""
+    z = grid.z_edges
+    top = top_solid_index(mat)
+    surface = np.append(z, z[-1])[top]
+    return z[:-1] - surface[..., None]
+
+
 def etch(grid: Grid, mat: np.ndarray, openings, depth_nm: float,
          materials: list[int] | None = None) -> np.ndarray:
     """Anisotropic (straight-down) etch through mask openings.
 
-    Removes solid cells from the local top surface down to ``depth_nm`` below it.
-    ``materials`` limits which materials are removed (default: all solids).
+    Removes solid cells whose centre lies within ``depth_nm`` of the local top
+    surface. ``materials`` limits which materials are removed (default: all).
     Returns the boolean array of removed cells.
     """
-    open_ = grid.mask(openings)
-    top = top_solid_index(mat)
-    n_cells = int(round(depth_nm / grid.spacing_nm))
-    k = np.arange(mat.shape[-1])
-    region = (k >= top[..., None]) & (k < top[..., None] + n_cells) & open_[..., None]
+    d = depth_below_top(grid, mat) + 0.5 * grid.widths(-1)
+    region = (d >= 0) & (d < depth_nm) & grid.mask(openings)[..., None]
     removable = mat != GAS
     if materials is not None:
         removable &= np.isin(mat, materials)
@@ -45,34 +50,41 @@ def etch(grid: Grid, mat: np.ndarray, openings, depth_nm: float,
     return removed
 
 
+def _cell_centers(grid: Grid) -> np.ndarray:
+    axes = np.meshgrid(*(grid.centers(a) for a in range(grid.ndim)), indexing="ij")
+    return np.stack([a.ravel() for a in axes], axis=1)
+
+
 def deposit(grid: Grid, mat: np.ndarray, material: int, thickness_nm: float,
             conformal: bool = True) -> np.ndarray:
     """Deposit a film. Returns the boolean array of new cells.
 
-    conformal: fills every gas cell within ``thickness_nm`` of an existing solid
-    (side walls included, so narrow trenches close up). Otherwise the film is
-    stacked straight up on top of each column.
+    conformal: fills every gas cell whose centre is within ``thickness_nm`` of
+    the centre of a solid cell (side walls included, so narrow trenches close
+    up). Otherwise the film is stacked straight up on top of each column.
     """
-    h = grid.spacing_nm
+    gas = mat == GAS
     if conformal:
-        gas = mat == GAS
-        if not gas.any():
+        solid = ~gas
+        if not gas.any() or not solid.any():
             return np.zeros_like(gas)
-        dist = ndimage.distance_transform_edt(gas) * h  # distance to nearest solid
-        # Solid only exists below; without a solid neighbour EDT returns a large value
-        new = gas & (dist <= thickness_nm + 1e-9)
+        centers = _cell_centers(grid)
+        tree = cKDTree(centers[solid.ravel()])
+        dist, _ = tree.query(centers[gas.ravel()], distance_upper_bound=thickness_nm + 1e-9)
+        new = np.zeros(gas.size, bool)
+        new[np.flatnonzero(gas.ravel())[np.isfinite(dist)]] = True
+        new = new.reshape(gas.shape)
     else:
+        z = grid.z_centers
         top = top_solid_index(mat)
-        n = int(round(thickness_nm / h))
-        k = np.arange(mat.shape[-1])
-        new = (k < top[..., None]) & (k >= top[..., None] - n) & (mat == GAS)
+        surface = np.append(grid.z_edges, grid.z_edges[-1])[top]
+        new = gas & (z < surface[..., None]) & (z > surface[..., None] - thickness_nm)
     mat[new] = material
     return new
 
 
 def planarize(grid: Grid, mat: np.ndarray, level_nm: float) -> np.ndarray:
     """Remove everything above ``level_nm`` (polishing flat). Returns removed cells."""
-    above = grid.z_centers < level_nm
-    removed = (mat != GAS) & above
+    removed = (mat != GAS) & (grid.z_centers < level_nm)
     mat[removed] = GAS
     return removed

@@ -94,14 +94,16 @@ class Defects:
         if self._si_key is None or not np.array_equal(self._si_key, si):
             self._build(si)
         r = self._region
-        rhs = emission.ravel()[r.cells] / (interstitial_transport_capacity(temp_c) * NM2_PER_CM2)
+        source = emission.ravel()[r.cells] * self.grid.volumes.ravel()[r.cells]
+        rhs = source / (interstitial_transport_capacity(temp_c) * NM2_PER_CM2)
         s = np.zeros(self.grid.n_cells)
         s[r.cells] = self._solver.solve(rhs)
         return np.maximum(s, 0.0).reshape(self.grid.shape)
 
     def _build(self, si: np.ndarray) -> None:
-        h2 = self.grid.spacing_nm**2
+        g = self.grid.conductance(np.ones(self.grid.n_cells))  # area / distance per face
+        half_i, half_j, area = self.grid.face_geometry
         r = fv.Region.of(si, *self._faces)
-        sink = r.edge_sum(2.0 / h2)  # half-cell distance to the interface
-        a = -r.laplacian(1.0 / h2) + sp.diags(sink)
+        sink = r.edge_sum(area[r.edge_face] / r.edge_side(half_i, half_j))  # s = 0 at the interface
+        a = -r.laplacian(g[r.inner_face]) + sp.diags(sink)
         self._si_key, self._region, self._solver = si.copy(), r, fv.SPDSolver(a)

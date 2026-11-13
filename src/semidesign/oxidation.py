@@ -94,47 +94,50 @@ class OxidationFront:
         self.headroom_exceeded = False
 
     def rates(self, mat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Per-cell rates (1/s): silicon consumed, gas filled."""
+        """Per-cell rates (fraction of the cell per second): silicon consumed, gas filled."""
         m = mat.ravel()
-        n = m.size
-        h = self.grid.spacing_nm
-        consume = np.zeros(n)
-        fill = np.zeros(n)
+        volume = self.grid.volumes.ravel()
+        half_i, half_j, area = self.grid.face_geometry
+        consume = np.zeros(m.size)  # consumed silicon volume per second, then / volume
+        fill = np.zeros(m.size)
         oxidizable = np.isin(m, OXIDIZABLE)
         gas = m == GAS
+        v0 = self.model.linear_rate_nm_s
 
-        # bare silicon in contact with the ambient: linear rate
+        # bare silicon in contact with the ambient grows at the linear rate
         for a, b in ((self.i, self.j), (self.j, self.i)):
             bare = oxidizable[a] & gas[b]
-            c = SI_CONSUMED_PER_OXIDE * self.model.linear_rate_nm_s / h
-            np.add.at(consume, a[bare], c)
-            np.add.at(fill, b[bare], EXPANSION * c)
+            rate = SI_CONSUMED_PER_OXIDE * v0 * area[bare]
+            np.add.at(consume, a[bare], rate)
+            np.add.at(fill, b[bare], EXPANSION * rate)
 
         region = fv.Region.of(self._oxide_open_to_ambient(mat), self.i, self.j)
-        if region.n == 0:
-            return consume, fill
-        out = m[region.edge_out]
-        to_gas, to_si = out == GAS, np.isin(out, OXIDIZABLE)
+        if region.n > 0:
+            out = m[region.edge_out]
+            to_gas, to_si = out == GAS, np.isin(out, OXIDIZABLE)
+            half = region.edge_side(half_i, half_j)  # oxide half cell at each edge face
+            face_area = area[region.edge_face]
+            lap = region.laplacian(self.grid.conductance(np.ones(m.size))[region.inner_face])
+            g_surface = np.where(to_gas, face_area / half, 0.0)  # u = 1 at the oxide surface
 
-        # oxidant: u = 1 at the surface (half cell away), reaction at Si faces
-        a_nm = self.model.a_nm
-        g_reaction = 2 * h / (a_nm + h)
-        lap = region.laplacian(1.0)
-        diag = region.edge_sum(2.0, to_gas) + region.edge_sum(g_reaction, to_si)
-        u = fv.SPDSolver(-lap + sp.diags(diag)).solve(region.edge_sum(2.0, to_gas))
+            # oxidant: reaction resistance A/2 in series with the oxide half cell
+            a_half = 0.5 * self.model.a_nm
+            g_reaction = np.where(to_si, face_area / (half + a_half), 0.0)
+            u = fv.SPDSolver(-lap + sp.diags(region.edge_sum(g_surface + g_reaction))).solve(
+                region.edge_sum(g_surface))
 
-        # growth at each oxide/Si face
-        u_face = u[region.edge_cell[to_si]] * a_nm / (a_nm + h)
-        c = SI_CONSUMED_PER_OXIDE * self.model.linear_rate_nm_s * u_face / h
-        np.add.at(consume, region.edge_out[to_si], c)
-        source = np.bincount(region.edge_cell[to_si], weights=EXPANSION * c, minlength=region.n)
+            # growth of each oxide/silicon face
+            u_face = u[region.edge_cell[to_si]] * a_half / (half[to_si] + a_half)
+            rate = SI_CONSUMED_PER_OXIDE * v0 * u_face * face_area[to_si]
+            np.add.at(consume, region.edge_out[to_si], rate)
+            source = np.bincount(region.edge_cell[to_si], weights=EXPANSION * rate, minlength=region.n)
 
-        # expansion: potential flow out through the free surface
-        if source.any():
-            diag = region.edge_sum(2.0, to_gas)
-            phi = fv.SPDSolver(-lap + sp.diags(diag)).solve(source)
-            np.add.at(fill, region.edge_out[to_gas], 2.0 * phi[region.edge_cell[to_gas]])
-        return consume, fill
+            # expansion: potential flow out through the free surface
+            if source.any():
+                phi = fv.SPDSolver(-lap + sp.diags(region.edge_sum(g_surface))).solve(source)
+                outflow = g_surface[to_gas] * phi[region.edge_cell[to_gas]]
+                np.add.at(fill, region.edge_out[to_gas], outflow)
+        return consume / volume, fill / volume
 
     def stable_step(self, consume: np.ndarray, fill: np.ndarray) -> float:
         fastest = max(consume.max(initial=0.0), fill.max(initial=0.0))
@@ -155,14 +158,15 @@ class OxidationFront:
         done = kind & (progress >= 1.0)
         if not done.any():
             return done
-        excess = np.where(done, progress - 1.0, 0.0)
+        volume = self.grid.volumes.ravel()
+        excess = np.where(done, progress - 1.0, 0.0) * volume
         m[done] = OXIDE
         progress[done] = 0.0
-        # the excess carries over to same-kind neighbours the front has not reached yet
+        # the excess volume carries over to same-kind neighbours the front has not reached yet
         untouched = kind & ~done & (progress == 0.0)
         for a, b in ((self.i, self.j), (self.j, self.i)):
             sel = done[a] & untouched[b]
-            np.maximum.at(progress, b[sel], excess[a[sel]])
+            np.maximum.at(progress, b[sel], excess[a[sel]] / volume[b[sel]])
         return done
 
     def _oxide_open_to_ambient(self, mat: np.ndarray) -> np.ndarray:

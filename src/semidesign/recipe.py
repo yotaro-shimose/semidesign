@@ -7,6 +7,11 @@ Example:
     width_nm = 1100          # one number = 2D, a list [x, y] = 3D
     depth_nm = 3000
     spacing_nm = 10
+    [[grid.refine]]          # optional: finer cells in a band
+    axis = "depth"
+    from_nm = -20
+    to_nm = 20
+    spacing_nm = 1
     [substrate]
     dopant = "B"
     conc = 1e15
@@ -24,7 +29,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from .grid import Grid
+from .grid import DEPTH, Grid, Refinement
 from .simulation import Simulation
 
 STEP_TYPES = {
@@ -49,7 +54,9 @@ def build_simulation(recipe: dict[str, Any], keep_snapshots: bool = True) -> Sim
     grid = Grid(lateral_nm=lateral, depth_nm=float(g.pop("depth_nm", 3000.0)),
                 spacing_nm=float(g.pop("spacing_nm", 10.0)),
                 headroom_nm=float(g.pop("headroom_nm", 200.0)),
-                periodic=bool(g.pop("periodic", False)))
+                periodic=bool(g.pop("periodic", False)),
+                refine=tuple(_refinement(r) for r in g.pop("refine", [])),
+                growth=float(g.pop("growth", 1.3)))
     if g:
         raise ValueError(f"unknown [grid] keys: {sorted(g)}")
     sub = recipe.get("substrate", {})
@@ -57,6 +64,22 @@ def build_simulation(recipe: dict[str, Any], keep_snapshots: bool = True) -> Sim
                       substrate_conc=float(sub.get("conc", 1e15)),
                       orientation=str(sub.get("orientation", "100")),
                       keep_snapshots=keep_snapshots)
+
+
+_AXES = {"x": 0, "y": 1, "depth": DEPTH, "z": DEPTH}
+
+
+def _refinement(r: dict[str, Any]) -> Refinement:
+    """[[grid.refine]] entry: axis ("x", "y" or "depth"), from_nm, to_nm, spacing_nm."""
+    r = dict(r)
+    try:
+        axis = _AXES[r.pop("axis")]
+        ref = Refinement(axis, float(r.pop("from_nm")), float(r.pop("to_nm")), float(r.pop("spacing_nm")))
+    except KeyError as e:
+        raise ValueError(f"[[grid.refine]] needs axis (x/y/depth), from_nm, to_nm, spacing_nm; problem with {e}") from None
+    if r:
+        raise ValueError(f"unknown [[grid.refine]] keys: {sorted(r)}")
+    return ref
 
 
 def run_step(sim: Simulation, step: dict[str, Any], index: int) -> None:

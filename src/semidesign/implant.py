@@ -23,11 +23,11 @@ from dataclasses import replace
 from functools import lru_cache
 
 import numpy as np
-from scipy import ndimage
+from scipy.special import erf
 
 from .bca import RANGE_TABLE, RangeDistribution
 from .constants import NM_PER_CM
-from .geometry import top_solid_index
+from .geometry import depth_below_top
 from .grid import Grid
 from .materials import GAS
 
@@ -83,20 +83,41 @@ def depth_cdf(dist: RangeDistribution, depth_nm: np.ndarray) -> np.ndarray:
     return np.interp(depth_nm, q, levels, left=0.0, right=1.0)
 
 
+def lateral_spread(edges: np.ndarray, sigma_nm: float, periodic: bool) -> np.ndarray:
+    """Matrix M with M[a, b] = share of the ions entering cell b that end up in cell a.
+
+    A Gaussian of width sigma around each cell centre, integrated over every
+    cell; the box edges reflect it (mirror symmetry) or wrap it (periodic).
+    """
+    c = 0.5 * (edges[:-1] + edges[1:])
+    length = edges[-1] - edges[0]
+    if periodic:
+        images = [(c + k * length, 1.0) for k in range(-2, 3)]
+    else:
+        images = [(c + 2 * k * length, 1.0) for k in (-1, 0, 1)] + \
+                 [(2 * edges[0] - c + 2 * k * length, 1.0) for k in (-1, 0, 1)]
+    cdf = lambda x: 0.5 * (1 + erf(x / (math.sqrt(2) * sigma_nm)))
+    m = np.zeros((c.size, c.size))
+    for centre, weight in images:
+        m += weight * (cdf(edges[1:, None] - centre[None, :]) - cdf(edges[:-1, None] - centre[None, :]))
+    return m
+
+
 def implant_profile(grid: Grid, mat: np.ndarray, dose: float, dist: RangeDistribution,
                     openings=None) -> np.ndarray:
     """Concentration (cm^-3) added by an implant of `dose` (cm^-2)."""
-    h = grid.spacing_nm
-    top = top_solid_index(mat)
-    depth_top = (np.arange(mat.shape[-1]) - top[..., None]) * h  # upper face of each cell
-    frac = depth_cdf(dist, depth_top + h) - depth_cdf(dist, depth_top)
+    depth_top = depth_below_top(grid, mat)  # upper face of each cell below the surface
+    height = grid.widths(-1)
+    frac = depth_cdf(dist, depth_top + height) - depth_cdf(dist, depth_top)
     frac[depth_top < 0] = 0.0
-    conc = dose * dist.retained * frac / (h / NM_PER_CM)
-    conc *= grid.mask(openings)[..., None]
-    sigma_cells = dist.lateral_nm / h
-    if sigma_cells > 0.25:
-        mode = "wrap" if grid.periodic else "reflect"
-        for ax in range(grid.ndim - 1):
-            conc = ndimage.gaussian_filter1d(conc, sigma_cells, axis=ax, mode=mode)
+    conc = dose * dist.retained * frac / (height / NM_PER_CM)
+    conc *= grid.open_fraction(openings)[..., None]
+    for ax in range(grid.ndim - 1):
+        if dist.lateral_nm > 0.05 * grid.widths(ax).min():
+            w = grid.widths(ax)
+            spread = lateral_spread(grid.edges[ax], dist.lateral_nm, grid.periodic)
+            amount = np.moveaxis(conc, ax, -1) * w  # per unit length along ax
+            moved = amount @ spread.T / w
+            conc = np.moveaxis(moved, -1, ax)
     conc[mat == GAS] = 0.0
     return conc

@@ -67,7 +67,8 @@ def test_3d_uses_conjugate_gradients_and_conserves_dose(monkeypatch):
 
 
 def test_face_pairs_and_region_are_consistent():
-    i, j = fv.face_pairs((3, 4), periodic_axes=(0,))
+    i, j, axis = fv.face_pairs((3, 4), periodic_axes=(0,))
+    assert (axis == 0).sum() == 3 * 4 and (axis == 1).sum() == 3 * 3
     assert len(i) == 3 * 3 + 2 * 4 + 4  # vertical + horizontal + wrap
     member = np.zeros((3, 4), bool)
     member[1] = True
