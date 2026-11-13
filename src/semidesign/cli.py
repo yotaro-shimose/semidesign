@@ -1,7 +1,8 @@
 """Command line: semidesign run recipe.toml [-o out] [--json]
 
 Designed to be called by people and by agents: --json prints the summary
-(steps, timings, doses, junction depths, output file names) to stdout.
+(steps, timings, doses, junction depths, pixel figures, output file names)
+to stdout. A [pixel] section in the recipe adds the pixel evaluation.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import sys
 from pathlib import Path
 
 from .output import write_outputs
-from .recipe import load_recipe, run_recipe
+from .recipe import load_recipe, pixel_spec, run_recipe
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -26,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="lateral position(s) in nm of the column used for junction depths")
     r.add_argument("--no-snapshots", action="store_true", help="do not save per-step arrays")
     r.add_argument("--no-plot", action="store_true")
+    r.add_argument("--no-pixel", action="store_true", help="skip the [pixel] evaluation")
     r.add_argument("--json", action="store_true", help="print the summary as JSON")
     args = p.parse_args(argv)
 
@@ -34,8 +36,9 @@ def main(argv: list[str] | None = None) -> int:
     out = args.out or Path("out") / args.recipe.stem
     sim = run_recipe(recipe, keep_snapshots=not args.no_snapshots)
     probe = args.probe[0] if args.probe and len(args.probe) == 1 else args.probe
+    spec = None if args.no_pixel else pixel_spec(recipe)
     summary = write_outputs(sim, out, name, probe, snapshots=not args.no_snapshots,
-                            plot=not args.no_plot)
+                            plot=not args.no_plot, pixel=spec)
 
     if args.json:
         json.dump(summary, sys.stdout, indent=2, ensure_ascii=False)
@@ -46,6 +49,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f" {s['index']:>2}. {s['type']:<9} {s['seconds']:>7.2f}s  {s['info']}")
     print("dose (cm^-2):", {k: f"{v:.3e}" for k, v in summary["dose_cm2"].items()})
     print("junction depths at probe (nm):", summary["junction_depths_nm"] or "none")
+    if "pixel" in summary:
+        px = summary["pixel"]
+        unit = " per um" if px["units"].endswith("(2D)") else ""
+        fw = next(v for k, v in px["full_well"].items() if k.startswith("electrons"))
+        rs = next(v for k, v in px.items() if k.startswith("residual"))
+        print(f"pixel: sensor potential {px['sensor_potential_v']:.2f} V | barrier TG off "
+              f"{px['tg_off']['barrier_v']:.2f} V, TG on {px['tg_on']['barrier_v']:.2f} V | "
+              f"full well {fw:.0f} e{unit} ({px['full_well']['limited_by']}) | "
+              f"left after transfer {rs:.3g} e{unit}  [{px['seconds']} s]")
     print(f"wrote {out}/")
     return 0
 

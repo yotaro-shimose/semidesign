@@ -85,7 +85,8 @@ def plot_cross_section(sim: Simulation, path: Path, title: str) -> None:
 
 
 def write_outputs(sim: Simulation, out_dir: Path, name: str, probe_nm=None,
-                  snapshots: bool = True, plot: bool = True) -> dict:
+                  snapshots: bool = True, plot: bool = True, pixel=None) -> dict:
+    """Write arrays, summary.json and plots; with a PixelSpec, also the pixel evaluation."""
     out_dir.mkdir(parents=True, exist_ok=True)
     summary = {"name": name, **sim.summary(probe_nm)}
     save_arrays(sim, out_dir / "result.npz")
@@ -95,6 +96,61 @@ def write_outputs(sim: Simulation, out_dir: Path, name: str, probe_nm=None,
     if plot:
         plot_cross_section(sim, out_dir / "cross_section.png", name)
         files["cross_section"] = "cross_section.png"
+    if pixel is not None:
+        import time
+        from .pixel import PixelAnalysis
+        t0 = time.perf_counter()
+        analysis = PixelAnalysis(sim, pixel)
+        summary["pixel"] = analysis.run()
+        summary["pixel"]["seconds"] = round(time.perf_counter() - t0, 1)
+        np.savez_compressed(out_dir / "pixel.npz", **{
+            f"psi_{label.replace(', ', '_').replace(' ', '_')}": pot.psi
+            for label, (pot, _) in analysis.states.items()})
+        files["pixel_arrays"] = "pixel.npz"
+        if plot:
+            plot_pixel(analysis, out_dir / "pixel_potential.png", name)
+            files["pixel_potential"] = "pixel_potential.png"
     summary["files"] = files
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
     return summary
+
+
+def plot_pixel(analysis, path: Path, title: str) -> None:
+    """Potential maps (empty PD, TG off and on) with the transfer path, and psi along it."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    g = analysis.grid
+    xe, ze = g.edges[0] / 1000, g.z_edges / 1000
+    states = analysis.states
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.2), gridspec_kw={"width_ratios": [1, 1, 1.2]})
+    vmax = max(np.nanmax(pot.psi) for pot, _ in states.values())
+    for ax, (label, (pot, tp)) in zip(axes[:2], states.items()):
+        psi = _section_array(pot.psi).T
+        im = ax.pcolormesh(xe, ze, np.ma.masked_invalid(psi), cmap="viridis", vmin=-1, vmax=vmax)
+        ax.contour(g.centers(0) / 1000, g.z_centers / 1000, np.ma.masked_invalid(psi),
+                   levels=np.arange(-1, vmax, 0.5), colors="w", linewidths=0.4)
+        ax.plot(tp.points_nm[:, 0] / 1000, tp.points_nm[:, -1] / 1000, "r-", lw=1.2)
+        ax.set_ylim(min(1.2, ze[-1]), -0.2)
+        ax.set_title(f"{label}: psi (V)", fontsize=10)
+        ax.set_xlabel("x (μm)")
+        ax.set_ylabel("depth (μm)")
+        fig.colorbar(im, ax=ax, shrink=0.8)
+    ax = axes[2]
+    for label, (pot, tp) in states.items():
+        ax.plot(tp.distance_nm / 1000, tp.psi, label=label)
+        ax.axhline(tp.saddle_v, ls=":", lw=0.8, color=ax.lines[-1].get_color())
+    ax.set_xlabel("distance along the transfer path, PD → FD (μm)")
+    ax.set_ylabel("psi (V)   (electrons collect where psi is high)")
+    ax.set_title("potential along the transfer path", fontsize=10)
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+def _section_array(arr: np.ndarray) -> np.ndarray:
+    return arr if arr.ndim == 2 else arr[:, arr.shape[1] // 2, :]

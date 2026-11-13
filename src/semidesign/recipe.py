@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from .grid import DEPTH, Grid, Refinement
+from .pixel import PixelSpec
 from .simulation import Simulation
 
 STEP_TYPES = {
@@ -98,6 +99,21 @@ def run_step(sim: Simulation, step: dict[str, Any], index: int) -> None:
         getattr(sim, kind)(**s)
     except TypeError as e:
         raise ValueError(f"step {index} ({kind}): {e}") from None
+
+
+def pixel_spec(recipe: dict[str, Any]) -> PixelSpec | None:
+    """The [pixel] section: points inside the PD and FD (nm) and the biases."""
+    if "pixel" not in recipe:
+        return None
+    px = dict(recipe["pixel"])
+    try:
+        spec = PixelSpec(pd_at=tuple(px.pop("pd_at")), fd_at=tuple(px.pop("fd_at")),
+                         **{k: float(px.pop(k)) for k in ("tg_off_v", "tg_on_v", "fd_v", "temp_k") if k in px})
+    except KeyError as e:
+        raise ValueError(f"[pixel] needs pd_at and fd_at; missing {e}") from None
+    if px:
+        raise ValueError(f"unknown [pixel] keys: {sorted(px)}")
+    return spec
 
 
 def run_recipe(recipe: dict[str, Any], keep_snapshots: bool = True) -> Simulation:

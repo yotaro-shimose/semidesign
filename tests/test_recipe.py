@@ -15,9 +15,9 @@ def test_example_recipe_builds_a_pinned_photodiode(tmp_path):
     recipe = load_recipe(EXAMPLE)
     sim = run_recipe(recipe)
     summary = write_outputs(sim, tmp_path, recipe["name"], plot=False)
-    # p+ lid on top of the n bucket on the p substrate: two junctions
-    top, bottom = summary["junction_depths_nm"]
-    assert 30 < top < 300 and 1000 < bottom < 3000
+    # p+ lid on top of the n bucket on the p substrate
+    junctions = summary["junction_depths_nm"]
+    assert 30 < junctions[0] < 300 and 1000 < junctions[-1] < 3000
     assert (tmp_path / "summary.json").exists()
     assert len(summary["files"]["snapshots"]) == len(recipe["step"]) + 1
     # the trench is lined and filled with oxide down to its bottom
@@ -25,7 +25,7 @@ def test_example_recipe_builds_a_pinned_photodiode(tmp_path):
     assert (edge[(sim.grid.z_centers > 0) & (sim.grid.z_centers < 2400)] == OXIDE).all()
     # just below the surface: p-type wall under the transfer gate, n+ floating diffusion
     net = sim.net_doping()
-    near_surface = lambda x: net[sim.column(x)][np.flatnonzero(sim.mat[sim.column(x)] == 1)[1]]
+    near_surface = lambda x: net[sim.column(x)][np.flatnonzero(sim.mat[sim.column(x)] == 1)[5]]
     assert near_surface(880) < 0
     assert near_surface(1000) > 1e19
     assert (sim.mat[sim.column(880)] == 3).any() and not (sim.mat[sim.column(600)] == 3).any()

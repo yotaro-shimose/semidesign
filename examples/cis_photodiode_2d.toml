@@ -1,8 +1,8 @@
-name = "CIS pixel: photodiode, transfer gate and floating diffusion (2D cross-section)"
+name = "CIS pixel: pinned photodiode, transfer gate, floating diffusion (2D)"
 
-# One 1.1 um pixel cut through photodiode (PD), transfer gate (TG) and
-# floating diffusion (FD). The box edges are mirrors, so the half trench at
-# each edge is half of the trench shared with the neighbouring pixel.
+# One 1.1 um pixel cut through the photodiode (PD), the transfer gate (TG) and
+# the floating diffusion (FD). The box edges are mirrors, so the half trench
+# at each edge is half of the trench shared with the neighbouring pixel.
 #
 #   x (um)  0    0.05            0.80      0.96      1.05 1.1
 #           | DTI |      PD       |   TG    |   FD    | DTI |
@@ -12,9 +12,35 @@ depth_nm = 3000
 spacing_nm = 10
 headroom_nm = 400
 
+[[grid.refine]]            # gate oxide, surface and shallow junctions
+axis = "depth"
+from_nm = -8
+to_nm = 40
+spacing_nm = 1
+
+[[grid.refine]]
+axis = "depth"
+from_nm = 40
+to_nm = 400
+spacing_nm = 4
+
+[[grid.refine]]            # around the transfer gate
+axis = "x"
+from_nm = 760
+to_nm = 1000
+spacing_nm = 4
+
 [substrate]
 dopant = "B"
-conc = 1e15          # lightly doped p-type silicon
+conc = 1e15                # lightly doped p-type silicon
+
+# Pixel evaluation after the process: points inside the PD and the FD, and biases
+[pixel]
+pd_at = [450, 800]
+fd_at = [1000, 40]
+tg_off_v = -1.0
+tg_on_v = 2.8
+fd_v = 2.8
 
 # --- deep trench isolation: etch, thermal liner on the side walls, oxide fill, polish
 [[step]]
@@ -39,43 +65,87 @@ note = "fill the rest of the trench"
 type = "planarize"
 level_nm = 0
 
-# --- photodiode: n-type bucket from three energies (resist mask up to the TG edge)
+[[step]]
+type = "etch"
+depth_nm = 40
+materials = ["oxide"]
+openings = [[50, 1050]]
+note = "strip the liner oxide from the pixel surface"
+
+# --- photodiode: n-type bucket, weaker deep down, reaching under the TG edge near the surface
 [[step]]
 type = "implant"
 dopant = "P"
-dose = 1.5e12
+dose = 1.5e11
 energy_kev = 1200
-openings = [[150, 780]]
+openings = [[150, 750]]
 
 [[step]]
 type = "implant"
 dopant = "P"
-dose = 2e12
+dose = 1.5e11
+energy_kev = 800
+openings = [[150, 775]]
+
+[[step]]
+type = "implant"
+dopant = "P"
+dose = 3e11
 energy_kev = 500
-openings = [[150, 790]]
-
-[[step]]
-type = "implant"
-dopant = "P"
-dose = 3e12
-energy_kev = 150
 openings = [[150, 800]]
 
-# --- p-type layer under the TG and around the FD: the wall between PD and FD
+[[step]]
+type = "implant"
+dopant = "P"
+dose = 1.2e12
+energy_kev = 150
+openings = [[150, 850]]
+
+[[step]]
+type = "implant"
+dopant = "P"
+dose = 1e12
+energy_kev = 60
+openings = [[600, 850]]
+note = "shallow extension that leads electrons to the TG"
+
+# --- p-type wells around the FD: keep the PD from reaching the FD underneath
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 1e12
+energy_kev = 300
+openings = [[900, 1050]]
+
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 1e12
+energy_kev = 700
+openings = [[900, 1050]]
+
 [[step]]
 type = "implant"
 dopant = "B"
 dose = 3e12
-energy_kev = 30
-openings = [[800, 1050]]
+energy_kev = 100
+openings = [[930, 1050]]
+
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 1.5e12
+energy_kev = 20
+openings = [[900, 1050]]
+note = "channel under the FD side of the TG: sets the barrier with the TG off"
 
 # --- transfer gate: gate oxide, poly-Si, patterned to the gate
 [[step]]
 type = "deposit"
 material = "oxide"
-thickness_nm = 10
+thickness_nm = 5
 conformal = false
-note = "gate oxide (a few nm in practice; one 10 nm cell at this grid spacing)"
+note = "gate oxide"
 
 [[step]]
 type = "deposit"
@@ -97,7 +167,7 @@ dopant = "B"
 dose = 1e13
 energy_kev = 10
 openings = [[60, 840]]
-note = "p+ lid over the PD, aligned to the TG edge"
+note = "p+ lid (pinning layer) over the PD"
 
 [[step]]
 type = "implant"
