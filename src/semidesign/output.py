@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .materials import GAS, NITRIDE, OXIDE, SI
+from .materials import COUNT, GAS, NAMES, OXIDE, SI
 from .simulation import Simulation
 
 
@@ -62,8 +62,9 @@ def plot_cross_section(sim: Simulation, path: Path, title: str) -> None:
 
     fig_w = 4 + 3 * g.lateral_nm[0] / max(g.lateral_nm[0], g.depth_nm)
     fig, ax = plt.subplots(figsize=(fig_w + 2, 7))
-    mat_rgb = ListedColormap(["#FFFFFF", "#F1EFE8", "#E6DFC8", "#B4B2A9", "#C9D6C3"])
-    ax.pcolormesh(xe, ze, mat, cmap=mat_rgb, vmin=GAS - 0.5, vmax=NITRIDE + 0.5)
+    # gas, Si, SiO2, poly, nitride, Al2O3, HfO2
+    mat_rgb = ListedColormap(["#FFFFFF", "#F1EFE8", "#E6DFC8", "#B4B2A9", "#C9D6C3", "#D8C3D6", "#C3CCDE"])
+    ax.pcolormesh(xe, ze, mat, cmap=mat_rgb, vmin=-0.5, vmax=COUNT - 0.5)
     im = ax.pcolormesh(xe, ze, signed, cmap="RdBu_r", vmin=-6, vmax=6)
     ax.set_ylim(ze[-1], ze[0])
     xx, zz = np.meshgrid(x / 1000, z / 1000)
@@ -84,18 +85,29 @@ def plot_cross_section(sim: Simulation, path: Path, title: str) -> None:
     plt.close(fig)
 
 
-def write_outputs(sim: Simulation, out_dir: Path, name: str, probe_nm=None,
-                  snapshots: bool = True, plot: bool = True, pixel=None) -> dict:
-    """Write arrays, summary.json and plots; with a PixelSpec, also the pixel evaluation."""
+def write_outputs(sim: Simulation, out_dir: Path, name: str, probes=None, snapshots: bool = True,
+                  plot: bool = True, pixel=None, comparisons=()) -> dict:
+    """Write arrays, summary.json, plots, a depth profile per probe and the
+    parameters used; with a PixelSpec the pixel evaluation, with Comparisons
+    the agreement with measured profiles."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    summary = {"name": name, **sim.summary(probe_nm)}
+    summary = {"name": name, **sim.summary(probes)}
     save_arrays(sim, out_dir / "result.npz")
-    files = {"arrays": "result.npz", "summary": "summary.json"}
+    (out_dir / "parameters.toml").write_text(sim.params.to_toml())
+    files = {"arrays": "result.npz", "summary": "summary.json", "parameters": "parameters.toml",
+             "profiles": save_profiles(sim, summary["probes"], out_dir / "profiles")}
     if snapshots and sim.snapshots:
         files["snapshots"] = [f"steps/{n}" for n in save_snapshots(sim, out_dir / "steps")]
     if plot:
         plot_cross_section(sim, out_dir / "cross_section.png", name)
         files["cross_section"] = "cross_section.png"
+    if comparisons:
+        summary["compare"] = [c.evaluate(sim) for c in comparisons]
+        if plot:
+            files["compare"] = []
+            for i, c in enumerate(comparisons, start=1):
+                c.plot(sim, out_dir / f"compare_{i}.png")
+                files["compare"].append(f"compare_{i}.png")
     if pixel is not None:
         import time
         from .pixel import PixelAnalysis
@@ -115,36 +127,72 @@ def write_outputs(sim: Simulation, out_dir: Path, name: str, probe_nm=None,
     return summary
 
 
+def save_profiles(sim: Simulation, probes: list[dict], folder: Path) -> list[str]:
+    """One CSV per probe column: depth, material and concentrations, like a SIMS export."""
+    folder.mkdir(parents=True, exist_ok=True)
+    names = []
+    for i, probe in enumerate(probes, start=1):
+        prof = sim.depth_profile(probe["at_nm"])
+        keys = [k for k in prof if k not in ("depth_nm", "material")]
+        lines = [f"# column at {probe['at_nm']} nm; depth from the initial front surface; cm^-3",
+                 "depth_nm,material," + ",".join(keys)]
+        for r in range(prof["depth_nm"].size):
+            if prof["material"][r] == GAS:
+                continue
+            lines.append(f"{prof['depth_nm'][r]:.2f},{NAMES[int(prof['material'][r])]}," +
+                         ",".join(f"{prof[k][r]:.4g}" for k in keys))
+        name = f"probe_{i}.csv"
+        (folder / name).write_text("\n".join(lines) + "\n")
+        names.append(f"profiles/{name}")
+    return names
+
+
 def plot_pixel(analysis, path: Path, title: str) -> None:
-    """Potential maps (empty PD, TG off and on) with the transfer path, and psi along it."""
+    """Potential maps (empty PD, TG off and on) with the transfer path, psi along
+    it, and psi along the collection path from the bottom of the silicon."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     g = analysis.grid
     xe, ze = g.edges[0] / 1000, g.z_edges / 1000
+    solid = np.flatnonzero((_section_array(analysis.sim.mat) != GAS).any(axis=0))
+    top, bottom = ze[solid[0]], ze[solid[-1] + 1]
     states = analysis.states
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5.2), gridspec_kw={"width_ratios": [1, 1, 1.2]})
+    fig = plt.figure(figsize=(15, 8.5))
+    grid = fig.add_gridspec(2, 3, width_ratios=[1, 1, 1.5])
     vmax = max(np.nanmax(pot.psi) for pot, _ in states.values())
-    for ax, (label, (pot, tp)) in zip(axes[:2], states.items()):
+    for k, (label, (pot, tp)) in enumerate(states.items()):
+        ax = fig.add_subplot(grid[:, k])
         psi = _section_array(pot.psi).T
         im = ax.pcolormesh(xe, ze, np.ma.masked_invalid(psi), cmap="viridis", vmin=-1, vmax=vmax)
         ax.contour(g.centers(0) / 1000, g.z_centers / 1000, np.ma.masked_invalid(psi),
                    levels=np.arange(-1, vmax, 0.5), colors="w", linewidths=0.4)
         ax.plot(tp.points_nm[:, 0] / 1000, tp.points_nm[:, -1] / 1000, "r-", lw=1.2)
-        ax.set_ylim(min(1.2, ze[-1]), -0.2)
+        if k == 0:
+            cp = analysis.collection_path
+            ax.plot(cp.points_nm[:, 0] / 1000, cp.points_nm[:, -1] / 1000, "-", color="orange", lw=1.2)
+        ax.set_ylim(bottom, top)
         ax.set_title(f"{label}: psi (V)", fontsize=10)
         ax.set_xlabel("x (μm)")
         ax.set_ylabel("depth (μm)")
-        fig.colorbar(im, ax=ax, shrink=0.8)
-    ax = axes[2]
+        fig.colorbar(im, ax=ax, shrink=0.6)
+    ax = fig.add_subplot(grid[0, 2])
     for label, (pot, tp) in states.items():
         ax.plot(tp.distance_nm / 1000, tp.psi, label=label)
         ax.axhline(tp.saddle_v, ls=":", lw=0.8, color=ax.lines[-1].get_color())
-    ax.set_xlabel("distance along the transfer path, PD → FD (μm)")
-    ax.set_ylabel("psi (V)   (electrons collect where psi is high)")
-    ax.set_title("potential along the transfer path", fontsize=10)
+    ax.set_xlabel("distance along the transfer path (red), PD → FD (μm)")
+    ax.set_ylabel("psi (V)")
+    ax.set_title("transfer: electrons collect where psi is high", fontsize=10)
     ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    ax = fig.add_subplot(grid[1, 2])
+    cp = analysis.collection_path
+    ax.plot(cp.distance_nm / 1000, cp.psi, color="orange")
+    ax.axhline(cp.saddle_v, ls=":", lw=0.8, color="orange")
+    ax.set_xlabel("distance along the collection path (orange), bottom → PD (μm)")
+    ax.set_ylabel("psi (V)")
+    ax.set_title("collection, TG off: should only rise toward the PD", fontsize=10)
     ax.grid(alpha=0.3)
     fig.suptitle(title, fontsize=11)
     fig.tight_layout()

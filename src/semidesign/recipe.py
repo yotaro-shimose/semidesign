@@ -14,7 +14,17 @@ Example:
     spacing_nm = 1
     [substrate]
     dopant = "B"
-    conc = 1e15
+    conc = 1e15              # or profile = [[depth_nm, conc], ...] (an epitaxial layer)
+    [parameters]             # optional: model parameters (see parameters.py)
+    file = "fab.toml"        # relative to the recipe; tables below override it
+    [parameters.dopant.B]
+    d0 = 0.8
+    [output]                 # optional
+    probes = [450, 1000]     # columns reported like a measurement; 3D: [[x, y], ...]
+    [[compare]]              # optional: a measured depth profile (SIMS) to compare with
+    probe = 450
+    dopant = "B"             # or "net"
+    file = "sims_b.csv"      # two columns: depth (nm), concentration (cm^-3)
     [[step]]
     type = "implant"
     dopant = "P"
@@ -29,7 +39,9 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from .compare import Comparison
 from .grid import DEPTH, Grid, Refinement
+from .parameters import Parameters
 from .pixel import PixelSpec
 from .simulation import Simulation
 
@@ -37,6 +49,7 @@ STEP_TYPES = {
     "etch": ("depth_nm",),
     "deposit": ("material", "thickness_nm"),
     "planarize": (),
+    "thin": ("si_thickness_nm",),
     "implant": ("dopant", "dose", "energy_kev"),
     "anneal": ("temp_c", "time_min"),
     "oxidize": ("temp_c", "time_min"),
@@ -44,8 +57,25 @@ STEP_TYPES = {
 
 
 def load_recipe(path: str | Path) -> dict[str, Any]:
+    """Read a recipe; files it names are resolved relative to it."""
+    path = Path(path)
     with open(path, "rb") as f:
-        return tomllib.load(f)
+        recipe = tomllib.load(f)
+    params = recipe.get("parameters", {})
+    if "file" in params:
+        params["file"] = str(path.parent / params["file"])
+    for c in recipe.get("compare", []):
+        if "file" in c:
+            c["file"] = str(path.parent / c["file"])
+    return recipe
+
+
+def parameters(recipe: dict[str, Any]) -> Parameters:
+    """[parameters]: a file of model parameters, then the tables given inline."""
+    table = dict(recipe.get("parameters", {}))
+    file = table.pop("file", None)
+    base = Parameters.load(file) if file else Parameters()
+    return base.updated(table)
 
 
 def build_simulation(recipe: dict[str, Any], keep_snapshots: bool = True) -> Simulation:
@@ -60,11 +90,18 @@ def build_simulation(recipe: dict[str, Any], keep_snapshots: bool = True) -> Sim
                 growth=float(g.pop("growth", 1.3)))
     if g:
         raise ValueError(f"unknown [grid] keys: {sorted(g)}")
-    sub = recipe.get("substrate", {})
-    return Simulation(grid, substrate_dopant=sub.get("dopant", "B"),
-                      substrate_conc=float(sub.get("conc", 1e15)),
-                      orientation=str(sub.get("orientation", "100")),
-                      keep_snapshots=keep_snapshots)
+    sub = dict(recipe.get("substrate", {}))
+    if "conc" in sub and "profile" in sub:
+        raise ValueError("[substrate]: give either conc or profile, not both")
+    profile = sub.pop("profile", None)
+    sim = Simulation(grid, substrate_dopant=sub.pop("dopant", "B"),
+                     substrate_conc=float(sub.pop("conc", 1e15)),
+                     substrate_profile=[tuple(map(float, p)) for p in profile] if profile else None,
+                     orientation=str(sub.pop("orientation", "100")),
+                     params=parameters(recipe), keep_snapshots=keep_snapshots)
+    if sub:
+        raise ValueError(f"unknown [substrate] keys: {sorted(sub)}")
+    return sim
 
 
 _AXES = {"x": 0, "y": 1, "depth": DEPTH, "z": DEPTH}
@@ -114,6 +151,30 @@ def pixel_spec(recipe: dict[str, Any]) -> PixelSpec | None:
     if px:
         raise ValueError(f"unknown [pixel] keys: {sorted(px)}")
     return spec
+
+
+def probes(recipe: dict[str, Any]) -> list | None:
+    """[output] probes: lateral positions of the columns to report."""
+    out = dict(recipe.get("output", {}))
+    found = out.pop("probes", None)
+    if out:
+        raise ValueError(f"unknown [output] keys: {sorted(out)}")
+    return list(found) if found else None
+
+
+def comparisons(recipe: dict[str, Any]) -> list[Comparison]:
+    """[[compare]] entries: measured depth profiles."""
+    out = []
+    for i, c in enumerate(recipe.get("compare", []), start=1):
+        c = dict(c)
+        try:
+            out.append(Comparison.read(c.pop("file"), probe=c.pop("probe"), dopant=c.pop("dopant"),
+                                       **{k: c.pop(k) for k in ("surface", "floor_cm3", "label") if k in c}))
+        except KeyError as e:
+            raise ValueError(f"[[compare]] {i}: needs file, probe and dopant; missing {e}") from None
+        if c:
+            raise ValueError(f"[[compare]] {i}: unknown keys {sorted(c)}")
+    return out
 
 
 def run_recipe(recipe: dict[str, Any], keep_snapshots: bool = True) -> Simulation:

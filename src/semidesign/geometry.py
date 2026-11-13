@@ -2,15 +2,49 @@
 
 The structure is a material code per cell (see materials.py). Surfaces are
 cell faces, so features are resolved to the local cell size.
+
+Every operation works from the top of the arrays it is given. The back side
+of the wafer (after it is bonded and thinned) is the top of the flipped view,
+``from_side(grid, mat, "back")``: the same code then etches, deposits and
+polishes from below, writing through the view into the real arrays.
 """
 
 from __future__ import annotations
 
 import numpy as np
+from scipy import ndimage
 from scipy.spatial import cKDTree
 
 from .grid import Grid
 from .materials import GAS
+
+
+SIDES = ("front", "back")
+
+
+def from_side(grid: Grid, mat: np.ndarray, side: str) -> tuple[Grid, np.ndarray]:
+    """Grid and material view with `side` on top (views share memory with `mat`)."""
+    if side == "front":
+        return grid, mat
+    if side == "back":
+        return grid.flipped(), mat[..., ::-1]
+    raise ValueError(f"side must be one of {SIDES}, not {side!r}")
+
+
+def unflip(arr: np.ndarray, side: str) -> np.ndarray:
+    """An array computed on the `side` view, back in front-side orientation."""
+    return arr[..., ::-1] if side == "back" else arr
+
+
+def ambient(mat: np.ndarray) -> np.ndarray:
+    """Gas open to the top of the box: what a process on this side can reach.
+
+    Voids sealed by an earlier film and the gas on the other side of a
+    thinned wafer are left out.
+    """
+    labels, _ = ndimage.label(mat == GAS)
+    open_labels = np.unique(labels[..., 0])
+    return np.isin(labels, open_labels[open_labels > 0])
 
 
 def top_solid_index(mat: np.ndarray) -> np.ndarray:
@@ -59,13 +93,13 @@ def deposit(grid: Grid, mat: np.ndarray, material: int, thickness_nm: float,
             conformal: bool = True) -> np.ndarray:
     """Deposit a film. Returns the boolean array of new cells.
 
-    conformal: fills every gas cell whose centre is within ``thickness_nm`` of
-    the centre of a solid cell (side walls included, so narrow trenches close
+    Only gas open to the top is filled (see ambient). conformal: fills every
+    such gas cell whose centre is within ``thickness_nm`` of the centre of a solid cell (side walls included, so narrow trenches close
     up). Otherwise the film is stacked straight up on top of each column.
     """
-    gas = mat == GAS
+    gas = ambient(mat)
     if conformal:
-        solid = ~gas
+        solid = mat != GAS
         if not gas.any() or not solid.any():
             return np.zeros_like(gas)
         centers = _cell_centers(grid)

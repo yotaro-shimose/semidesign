@@ -41,12 +41,24 @@ SI_CONSUMED_PER_OXIDE = 0.44
 EXPANSION = 1 / SI_CONSUMED_PER_OXIDE - 1  # extra oxide volume per consumed silicon volume
 MAX_FRACTION_PER_STEP = 0.25
 
-# Deal-Grove parameters for <111> Si (Plummer, Deal & Griffin); B in um^2/h, B/A in um/h
-_PARAMS = {
-    "dry": {"b_c": 7.72e2, "b_e": 1.23, "ba_c": 6.23e6, "ba_e": 2.0},
-    "wet": {"b_c": 3.86e2, "b_e": 0.78, "ba_c": 1.63e8, "ba_e": 2.05},
-}
-_ORIENTATION_FACTOR = {"111": 1.0, "100": 1 / 1.68}
+
+@dataclass(frozen=True)
+class DealGroveConstants:
+    """Arrhenius constants for <111> Si: B in um^2/h, B/A in um/h."""
+
+    b_um2_h: float
+    b_ea_ev: float
+    b_over_a_um_h: float
+    b_over_a_ea_ev: float
+
+
+@dataclass(frozen=True)
+class OxidationModel:
+    """Calibration knobs of oxidation (defaults: Plummer, Deal & Griffin)."""
+
+    dry: DealGroveConstants = DealGroveConstants(7.72e2, 1.23, 6.23e6, 2.0)
+    wet: DealGroveConstants = DealGroveConstants(3.86e2, 0.78, 1.63e8, 2.05)
+    linear_rate_100_over_111: float = 1 / 1.68
 
 
 @dataclass(frozen=True)
@@ -55,15 +67,17 @@ class DealGrove:
     b_over_a_um_h: float
 
     @classmethod
-    def at(cls, temp_c: float, ambient: str, orientation: str = "100") -> "DealGrove":
-        if ambient not in _PARAMS:
-            raise ValueError(f"ambient must be one of {sorted(_PARAMS)}")
-        if orientation not in _ORIENTATION_FACTOR:
-            raise ValueError(f"orientation must be one of {sorted(_ORIENTATION_FACTOR)}")
-        p = _PARAMS[ambient]
+    def at(cls, temp_c: float, ambient: str, orientation: str = "100",
+           model: OxidationModel = OxidationModel()) -> "DealGrove":
+        if ambient not in ("dry", "wet"):
+            raise ValueError("ambient must be 'dry' or 'wet'")
+        factor = {"111": 1.0, "100": model.linear_rate_100_over_111}.get(orientation)
+        if factor is None:
+            raise ValueError("orientation must be '100' or '111'")
+        p: DealGroveConstants = getattr(model, ambient)
         kt = kt_ev(temp_c)
-        return cls(p["b_c"] * np.exp(-p["b_e"] / kt),
-                   p["ba_c"] * np.exp(-p["ba_e"] / kt) * _ORIENTATION_FACTOR[orientation])
+        return cls(p.b_um2_h * np.exp(-p.b_ea_ev / kt),
+                   p.b_over_a_um_h * np.exp(-p.b_over_a_ea_ev / kt) * factor)
 
     @property
     def a_nm(self) -> float:

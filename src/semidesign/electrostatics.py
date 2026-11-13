@@ -22,22 +22,31 @@ level at the conduction band edge, half a band gap above the intrinsic
 level). Gas cells are left out (no field crosses the free surface). Outer
 edges are closed; lateral edges optionally periodic.
 
+Fixed charge at an interface between silicon and an insulator (the negative
+charge of an Al2O3 or HfO2 film on the back surface, the positive fixed
+charge of thermal oxide) is a sheet charge on the faces between them, given
+per insulator material in cm^-2 (electrons' charge = -1). Half of it is put in
+each of the two cells of a face, so the jump in eps grad psi across the
+interface equals the sheet charge.
+
 Newton's method, each step capped at 1 V and shortened until the residual drops.
 Not modelled: Fermi-Dirac statistics and band-gap narrowing at very high
-doping, incomplete ionization, fixed oxide charge and interface traps.
+doping, incomplete ionization, interface traps (charge that depends on bias).
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
 import scipy.sparse as sp
 
 from . import fv
+from .constants import NM_PER_CM
 from .grid import Grid
-from .materials import COUNT, GAS, NITRIDE, OXIDE, POLY, SI
+from .materials import AL2O3, COUNT, GAS, HFO2, NITRIDE, OXIDE, POLY, SI, material_code
 
 Q_OVER_EPS0 = 1.602176634e-19 / 8.8541878128e-12  # V m
 CHARGE_FACTOR = Q_OVER_EPS0 * 1e-12  # charge term with cm^-3, nm and relative permittivity
@@ -58,6 +67,7 @@ def intrinsic_density(temp_k: float = 300.0) -> float:
 
 PERMITTIVITY = np.zeros(COUNT)
 PERMITTIVITY[SI], PERMITTIVITY[OXIDE], PERMITTIVITY[NITRIDE] = 11.7, 3.9, 7.5
+PERMITTIVITY[AL2O3], PERMITTIVITY[HFO2] = 9.0, 22.0
 PERMITTIVITY[POLY] = CONDUCTOR
 
 
@@ -74,7 +84,8 @@ class Potential:
 class PoissonSolver:
     """Electrostatics of one structure; solve() for different biases and phi_n."""
 
-    def __init__(self, grid: Grid, mat: np.ndarray, net_doping: np.ndarray, temp_k: float = 300.0):
+    def __init__(self, grid: Grid, mat: np.ndarray, net_doping: np.ndarray, temp_k: float = 300.0,
+                 interface_charge_cm2: Mapping[str, float] | None = None):
         self.grid = grid
         self.mat = mat.ravel()
         self.doping = np.where(self.mat == SI, net_doping.ravel(), 0.0)
@@ -90,6 +101,22 @@ class PoissonSolver:
         self._g_gate = np.where(to_gate, g[r.edge_face], 0.0)
         self._volume = grid.volumes.ravel()[r.cells]
         self._si_local = self.si[r.cells]
+        self._fixed = CHARGE_FACTOR * self._sheet_charge(interface_charge_cm2 or {})[r.cells]
+
+    def _sheet_charge(self, per_material: Mapping[str, float]) -> np.ndarray:
+        """Interface charges as cell charges (cm^-3 x cell size), half on each side of a face."""
+        q = np.zeros(self.mat.size)
+        i, j = self.grid.faces
+        _, _, area = self.grid.face_geometry
+        for name, density in per_material.items():
+            code = material_code(name)
+            if code in (GAS, SI, POLY):
+                raise ValueError(f"interface charge needs an insulator next to silicon, not {name!r}")
+            face = ((self.mat[i] == SI) & (self.mat[j] == code)) | ((self.mat[j] == SI) & (self.mat[i] == code))
+            half = 0.5 * density * NM_PER_CM * area[face]  # cm^-2 over the face = cm^-3 x nm^ndim
+            np.add.at(q, i[face], half)
+            np.add.at(q, j[face], half)
+        return q
 
     def solve(self, gate_v: float, phi_n: np.ndarray | float = 0.0,
               initial: Potential | None = None, tol_v: float = 1e-7, max_iter: int = 200) -> Potential:
@@ -114,7 +141,7 @@ class PoissonSolver:
 
         def residual(x):
             n, p = carriers(x)
-            return lap @ x + gate_term + weight * (p - n + dop)
+            return lap @ x + gate_term + weight * (p - n + dop) + self._fixed
 
         f = residual(psi)
         for it in range(1, max_iter + 1):

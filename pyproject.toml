@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semidesign"
-version = "0.3.0"
+version = "0.4.0"
 description = "2D/3D silicon process simulator for image-sensor pixels"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.26", "scipy>=1.11", "matplotlib>=3.8"]
+dependencies = ["numpy>=2.0", "scipy>=1.11", "matplotlib>=3.8"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

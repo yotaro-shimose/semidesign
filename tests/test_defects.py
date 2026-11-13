@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from conftest import depth_variance, gaussian_layer, make
-from semidesign.defects import cluster_dissolution_time, interstitial_transport_capacity
+from semidesign.defects import DefectModel
 from semidesign.dopants import get_dopant
 
 
@@ -20,8 +20,8 @@ def test_supersaturation_matches_slab_solution():
     sim.defects.add_implant_damage(layer, sim.mat)
     temp, dt = 900.0, 1.0
     s = sim.defects.advance(sim.mat, temp, dt)
-    emission = dose * (1 - math.exp(-dt / cluster_dissolution_time(temp))) / dt
-    expected = emission * z[k] * 1e-7 / interstitial_transport_capacity(temp)
+    emission = dose * (1 - math.exp(-dt / DefectModel().dissolution_time(temp))) / dt
+    expected = emission * z[k] * 1e-7 / DefectModel().transport_capacity(temp)
     assert s[0, k + 50] - 1 == pytest.approx(expected, rel=1e-6)
     assert s[0, k // 2] - 1 == pytest.approx(expected * z[k // 2] / z[k], rel=1e-6)
 

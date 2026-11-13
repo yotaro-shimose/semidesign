@@ -20,6 +20,7 @@ TED therefore lasts a few tau and is stronger when the damage sits deeper
 Parameters
 - D_I C_I* / C_Si = 2980 exp(-4.95 eV / kT) cm^2/s: H. Bracht, N. A. Stolwijk,
   H. Mehrer, Phys. Rev. B 52, 16542 (1995).
+These are the defaults of DefectModel, the knobs for calibration.
 - {311} dissolution: activation energy 3.8 eV (D. J. Eaglesham et al.,
   Appl. Phys. Lett. 65, 2305 (1994)); time constant set to 1000 s at 800 C,
   i.e. about 30 s at 900 C and 2 s at 1000 C, matching the usual TED
@@ -30,6 +31,7 @@ Parameters
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import scipy.sparse as sp
@@ -39,26 +41,33 @@ from .constants import NM2_PER_CM2, SI_ATOMS_PER_CM3, kt_ev
 from .grid import Grid
 from .materials import SI
 
-TAU_800C_S = 1000.0
-CLUSTER_EA_EV = 3.8
 NEGLIGIBLE_SUPERSATURATION = 1e-3  # S - 1 below this does not change diffusion
 
 
-def interstitial_transport_capacity(temp_c: float) -> float:
-    """D_I C_I* in cm^-1 s^-1."""
-    return 2980.0 * SI_ATOMS_PER_CM3 * math.exp(-4.95 / kt_ev(temp_c))
+@dataclass(frozen=True)
+class DefectModel:
+    """Calibration knobs of the damage model (defaults: see the module notes)."""
 
+    tau_800c_s: float = 1000.0  # {311} dissolution time constant at 800 C
+    cluster_ea_ev: float = 3.8  # its activation energy
+    di_ci_prefactor_cm2_s: float = 2980.0  # D_I C_I* / C_Si = prefactor exp(-Ea / kT)
+    di_ci_ea_ev: float = 4.95
 
-def cluster_dissolution_time(temp_c: float) -> float:
-    """Time constant (s) of {311} cluster dissolution."""
-    return TAU_800C_S * math.exp(CLUSTER_EA_EV * (1 / kt_ev(temp_c) - 1 / kt_ev(800.0)))
+    def dissolution_time(self, temp_c: float) -> float:
+        """Time constant (s) of {311} cluster dissolution."""
+        return self.tau_800c_s * math.exp(self.cluster_ea_ev * (1 / kt_ev(temp_c) - 1 / kt_ev(800.0)))
+
+    def transport_capacity(self, temp_c: float) -> float:
+        """D_I C_I* in cm^-1 s^-1."""
+        return self.di_ci_prefactor_cm2_s * SI_ATOMS_PER_CM3 * math.exp(-self.di_ci_ea_ev / kt_ev(temp_c))
 
 
 class Defects:
     """Excess interstitials stored in clusters, and the supersaturation they drive."""
 
-    def __init__(self, grid: Grid):
+    def __init__(self, grid: Grid, model: DefectModel = DefectModel()):
         self.grid = grid
+        self.model = model
         self.clusters = np.zeros(grid.shape)  # cm^-3 excess interstitials
         self.enhancing = False  # last advance() changed diffusion noticeably
         self._faces = grid.faces
@@ -82,7 +91,7 @@ class Defects:
             self.enhancing = False
             return None
         before = self.clusters
-        self.clusters = before * math.exp(-dt_s / cluster_dissolution_time(temp_c))
+        self.clusters = before * math.exp(-dt_s / self.model.dissolution_time(temp_c))
         emission = (before - self.clusters) / dt_s  # cm^-3 s^-1
         excess = self._quasi_steady_excess(mat, emission, temp_c)
         self.enhancing = bool(excess.max() > NEGLIGIBLE_SUPERSATURATION)
@@ -95,7 +104,7 @@ class Defects:
             self._build(si)
         r = self._region
         source = emission.ravel()[r.cells] * self.grid.volumes.ravel()[r.cells]
-        rhs = source / (interstitial_transport_capacity(temp_c) * NM2_PER_CM2)
+        rhs = source / (self.model.transport_capacity(temp_c) * NM2_PER_CM2)
         s = np.zeros(self.grid.n_cells)
         s[r.cells] = self._solver.solve(rhs)
         return np.maximum(s, 0.0).reshape(self.grid.shape)

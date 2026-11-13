@@ -5,7 +5,7 @@ import pytest
 
 from conftest import depth_variance, gaussian_layer
 from semidesign import Grid, Simulation
-from semidesign.defects import cluster_dissolution_time, interstitial_transport_capacity
+from semidesign.defects import DefectModel
 from semidesign.dopants import get_dopant
 from semidesign.grid import DEPTH, Refinement, graded_edges
 from semidesign.materials import OXIDE, SI
@@ -72,8 +72,8 @@ def test_supersaturation_on_graded_grid_matches_slab_solution():
     layer[:, k] = 1e14 / (h[k] * 1e-7)
     sim.defects.add_implant_damage(layer, sim.mat)
     s = sim.defects.advance(sim.mat, 900.0, 1.0)
-    emission = 1e14 * (1 - math.exp(-1.0 / cluster_dissolution_time(900.0)))
-    expected = emission * z[k] * 1e-7 / interstitial_transport_capacity(900.0)
+    emission = 1e14 * (1 - math.exp(-1.0 / DefectModel().dissolution_time(900.0)))
+    expected = emission * z[k] * 1e-7 / DefectModel().transport_capacity(900.0)
     assert s[0, -1] - 1 == pytest.approx(expected, rel=1e-6)
 
 

@@ -16,7 +16,7 @@ def test_example_recipe_builds_a_pinned_photodiode(tmp_path):
     sim = run_recipe(recipe)
     summary = write_outputs(sim, tmp_path, recipe["name"], plot=False)
     # p+ lid on top of the n bucket on the p substrate
-    junctions = summary["junction_depths_nm"]
+    junctions = summary["probes"][0]["junction_depths_nm"]
     assert 30 < junctions[0] < 300 and 1000 < junctions[-1] < 3000
     assert (tmp_path / "summary.json").exists()
     assert len(summary["files"]["snapshots"]) == len(recipe["step"]) + 1

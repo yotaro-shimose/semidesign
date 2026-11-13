@@ -17,6 +17,7 @@ segregate_at_new_oxide, which applies the same equilibrium locally.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -24,7 +25,7 @@ import scipy.sparse as sp
 
 from . import fv
 from .constants import NM2_PER_CM2
-from .dopants import get_dopant
+from .dopants import DOPANTS, Dopant
 from .grid import Grid
 from .materials import OXIDE, SI
 
@@ -37,9 +38,10 @@ class DopantTransport:
     factorization reused.
     """
 
-    def __init__(self, grid: Grid, temp_c: float):
+    def __init__(self, grid: Grid, temp_c: float, dopants: Mapping[str, Dopant] = DOPANTS):
         self.grid = grid
         self.temp_c = temp_c
+        self.dopants = dopants
         self.i, self.j = grid.faces
         self._cache: dict[str, _CachedSystem] = {}
 
@@ -71,7 +73,7 @@ class DopantTransport:
         return solver, w
 
     def _matrix(self, name, mat, dt_s, supersaturation):
-        d = get_dopant(name)
+        d = self.dopants[name]
         m = mat.ravel()
         w = d.capacity_by_material()[m]
         diff = d.diffusivity_by_material(self.temp_c)[m] * NM2_PER_CM2  # nm^2/s
@@ -96,7 +98,7 @@ class _CachedSystem:
 
 
 def segregate_at_new_oxide(grid: Grid, conc: dict[str, np.ndarray], mat: np.ndarray,
-                           converted: np.ndarray) -> None:
+                           converted: np.ndarray, dopants: Mapping[str, Dopant] = DOPANTS) -> None:
     """Redistribute dopant where silicon has just turned into oxide.
 
     The new oxide cell and the silicon cells it touches come to local
@@ -119,7 +121,7 @@ def segregate_at_new_oxide(grid: Grid, conc: dict[str, np.ndarray], mat: np.ndar
     groups = np.split(pairs[:, 1], start[1:])
     volume = grid.volumes.ravel()
     for name, c in conc.items():
-        w_ox = get_dopant(name).capacity_by_material()[OXIDE]
+        w_ox = dopants[name].capacity_by_material()[OXIDE]
         flat = c.reshape(-1)
         for cell, nbrs in zip(cells, groups):
             total = flat[cell] * volume[cell] + (flat[nbrs] * volume[nbrs]).sum()

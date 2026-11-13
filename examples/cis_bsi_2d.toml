@@ -1,0 +1,238 @@
+name = "Back-illuminated CIS pixel: PD, transfer gate, FD, back-side DTI (2D)"
+
+# One 1.1 um pixel of a back-illuminated sensor, cut through the photodiode
+# (PD), the transfer gate (TG) and the floating diffusion (FD). The front side
+# is made first; then the wafer is bonded face down, thinned to 3 um of
+# silicon, and finished from the back at low temperature: trenches between
+# pixels and a negatively charged film that holds holes at the back surface.
+# Light enters from the back (the bottom of the pictures).
+#
+# The box edges are mirrors, so the half trench at each edge is half of the
+# trench shared with the neighbouring pixel.
+#
+#   x (um)  0    0.05            0.80      0.96      1.05 1.1
+#           | DTI |      PD       |   TG    |   FD    | DTI |   (DTI from the back)
+[grid]
+width_nm = 1100
+depth_nm = 3300            # 3000 nm of silicon after thinning + room for the back films
+spacing_nm = 10
+headroom_nm = 400
+
+[[grid.refine]]            # gate oxide, front surface, shallow junctions
+axis = "depth"
+from_nm = -8
+to_nm = 40
+spacing_nm = 1
+
+[[grid.refine]]
+axis = "depth"
+from_nm = 40
+to_nm = 400
+spacing_nm = 4
+
+[[grid.refine]]            # back surface and its films
+axis = "depth"
+from_nm = 2980
+to_nm = 3030
+spacing_nm = 2
+
+[[grid.refine]]            # around the transfer gate
+axis = "x"
+from_nm = 760
+to_nm = 1000
+spacing_nm = 4
+
+[[grid.refine]]            # trench walls
+axis = "x"
+from_nm = 0
+to_nm = 70
+spacing_nm = 5
+
+[[grid.refine]]
+axis = "x"
+from_nm = 1030
+to_nm = 1100
+spacing_nm = 5
+
+# p-type epitaxial layer, more boron toward the back: the slope pushes
+# electrons made near the back surface up toward the PD
+[substrate]
+dopant = "B"
+profile = [[0, 1e15], [2000, 1e15], [3000, 2e16]]
+
+# Calibration values (see `semidesign parameters`); the charge of the back film
+# depends on how it is deposited and should be set from measurements
+[parameters.interface_charge_cm2]
+Al2O3 = -2e12
+
+[output]
+probes = [450, 1000]
+
+[pixel]
+pd_at = [450, 800]
+fd_at = [1000, 40]
+tg_off_v = -1.0
+tg_on_v = 2.8
+fd_v = 2.8
+
+# ============================== front side ==============================
+
+# --- photodiode: n-type bucket, weaker deep down, reaching under the TG edge near the surface
+[[step]]
+type = "implant"
+dopant = "P"
+dose = 3e11
+energy_kev = 1200
+openings = [[150, 750]]
+
+[[step]]
+type = "implant"
+dopant = "P"
+dose = 3e11
+energy_kev = 800
+openings = [[150, 775]]
+
+[[step]]
+type = "implant"
+dopant = "P"
+dose = 4e11
+energy_kev = 500
+openings = [[150, 800]]
+
+[[step]]
+type = "implant"
+dopant = "P"
+dose = 1.4e12
+energy_kev = 150
+openings = [[150, 850]]
+
+[[step]]
+type = "implant"
+dopant = "P"
+dose = 1.5e12
+energy_kev = 60
+openings = [[600, 850]]
+note = "shallow extension that leads electrons to the TG"
+
+# --- p-type isolation near the front, where the back trench does not reach
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 5e11
+energy_kev = 300
+openings = [[0, 60]]
+
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 5e11
+energy_kev = 100
+openings = [[0, 60]]
+
+# --- p-type wells around the FD: keep the PD from reaching the FD underneath
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 1e12
+energy_kev = 300
+openings = [[900, 1100]]
+
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 1e12
+energy_kev = 700
+openings = [[900, 1100]]
+
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 3e12
+energy_kev = 100
+openings = [[930, 1100]]
+
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 2e12
+energy_kev = 20
+openings = [[900, 1100]]
+note = "channel under the FD side of the TG: sets the barrier with the TG off"
+
+# --- transfer gate: gate oxide, poly-Si, patterned to the gate
+[[step]]
+type = "deposit"
+material = "oxide"
+thickness_nm = 5
+conformal = false
+note = "gate oxide"
+
+[[step]]
+type = "deposit"
+material = "poly"
+thickness_nm = 150
+conformal = false
+
+[[step]]
+type = "etch"
+depth_nm = 200
+materials = ["poly"]
+openings = [[0, 800], [960, 1100]]
+note = "leave poly only over the gate"
+
+# --- implants aligned by the gate itself
+[[step]]
+type = "implant"
+dopant = "B"
+dose = 1e13
+energy_kev = 10
+openings = [[60, 840]]
+note = "p+ lid (pinning layer) over the PD"
+
+[[step]]
+type = "implant"
+dopant = "As"
+dose = 2e15
+energy_kev = 30
+openings = [[920, 1040]]
+note = "n+ FD, aligned to the other TG edge"
+
+[[step]]
+type = "anneal"
+temp_c = 1000
+time_min = 0.5
+note = "activation; the last high-temperature step"
+
+[[step]]
+type = "deposit"
+material = "oxide"
+thickness_nm = 400
+note = "dielectric under the wiring (the wiring itself is not modelled)"
+
+# =============================== back side ==============================
+
+[[step]]
+type = "thin"
+si_thickness_nm = 3000
+note = "bond face down to a support wafer and grind the back to 3 um of silicon"
+
+[[step]]
+type = "etch"
+side = "back"
+depth_nm = 2600
+openings = [[0, 50], [1050, 1100]]
+note = "deep trench between pixels, from the back"
+
+[[step]]
+type = "deposit"
+side = "back"
+material = "Al2O3"
+thickness_nm = 10
+note = "negatively charged film on the back surface and the trench walls"
+
+[[step]]
+type = "deposit"
+side = "back"
+material = "oxide"
+thickness_nm = 100
+note = "fill the trench and cover the back"

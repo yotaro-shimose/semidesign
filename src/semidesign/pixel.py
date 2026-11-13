@@ -32,6 +32,15 @@ Defined as features of the potential landscape, not of drawn regions:
   reaches min(V_FD, its bottleneck); what is left below is counted. A
   quasi-static estimate: a finite transfer time leaves more behind if a
   barrier is a few V_T or more.
+- collection from the bottom (TG off, empty PD): electrons made by light
+  deep in the silicon (near the back surface of a back-illuminated sensor)
+  must reach the PD. For each silicon cell on the bottom surface (columns
+  above a trench are left out), the bottleneck to the PD is the highest saddle over all its paths there;
+  collection barrier = psi of the cell - its bottleneck (> 0: electrons
+  made there have to climb, or are lost). The worst cell and its path are
+  reported, and how far below the PD the silicon goes. The lowest hole
+  density on that surface tells whether it is held by holes ("pinned"), which
+  keeps its defects from generating electrons (dark current).
 
 In 2D the structure is taken to be uniform along the third axis, so charges
 are per micrometre of width.
@@ -80,7 +89,8 @@ class TransferPath:
 class PixelAnalysis:
     def __init__(self, sim: Simulation, spec: PixelSpec):
         self.sim, self.spec, self.grid = sim, spec, sim.grid
-        self.solver = PoissonSolver(sim.grid, sim.mat, sim.net_doping(), spec.temp_k)
+        self.solver = PoissonSolver(sim.grid, sim.mat, sim.net_doping(), spec.temp_k,
+                                    sim.params.interface_charge_cm2)
         self.pd, self.fd = self._find_regions()
         self._si = (sim.mat == SI).ravel()
         self._centers = np.stack([c.ravel() for c in np.meshgrid(
@@ -149,6 +159,22 @@ class PixelAnalysis:
         fd = np.flatnonzero(self.fd.ravel())
         return int(fd[np.argmax(psi[fd])])
 
+    def _path(self, pot: Potential, start: int, goal: int, tree=None) -> np.ndarray:
+        """Cells of the maximin path from start to goal."""
+        _, pred = breadth_first_order(self._maximin_tree(pot) if tree is None else tree, start,
+                                      directed=False, return_predecessors=True)
+        path = [goal]
+        while path[-1] != start:
+            path.append(int(pred[path[-1]]))
+            if path[-1] < 0:
+                raise RuntimeError("no silicon path between the two cells")
+        return np.array(path[::-1])
+
+    def _profile(self, psi: np.ndarray, path: np.ndarray, sensor: float, saddle: float) -> TransferPath:
+        pts = self._centers[path]
+        dist = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
+        return TransferPath(psi[path], dist, pts, sensor, saddle)
+
     def storage_cell(self, pot: Potential) -> int:
         """Where electrons collect: the highest psi in the PD."""
         pd = np.flatnonzero(self.pd.ravel())
@@ -157,33 +183,53 @@ class PixelAnalysis:
     def transfer_path(self, pot: Potential, start: int | None = None) -> TransferPath:
         psi = pot.psi.ravel()
         start = self.storage_cell(pot) if start is None else start
-        goal = self._fd_seed(psi)
-        _, pred = breadth_first_order(self._maximin_tree(pot), start, directed=False,
-                                      return_predecessors=True)
-        path = [goal]
-        while path[-1] != start:
-            path.append(int(pred[path[-1]]))
-            if path[-1] < 0:
-                raise RuntimeError("no silicon path from the photodiode to the floating diffusion")
-        path = np.array(path[::-1])
-        pts = self._centers[path]
-        dist = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
+        try:
+            path = self._path(pot, start, self._fd_seed(psi))
+        except RuntimeError:
+            raise RuntimeError("no silicon path from the photodiode to the floating diffusion") from None
         before_fd = ~self.fd.ravel()[path]  # the saddle: lowest psi before the path enters the FD
-        return TransferPath(psi[path], dist, pts, float(psi[start]), float(psi[path][before_fd].min()))
+        return self._profile(psi, path, float(psi[start]), float(psi[path][before_fd].min()))
 
-    def bottlenecks(self, pot: Potential) -> np.ndarray:
-        """Per cell, the highest saddle over all silicon paths to the FD (NaN elsewhere)."""
+    def bottlenecks(self, pot: Potential, target: np.ndarray | None = None, tree=None) -> np.ndarray:
+        """Per cell, the highest saddle over all silicon paths into `target`
+        (default the FD; NaN outside silicon)."""
         psi = pot.psi.ravel()
-        seed = self._fd_seed(psi)
-        order, pred = breadth_first_order(self._maximin_tree(pot), seed, directed=False,
-                                          return_predecessors=True)
+        target = (self.fd if target is None else target).ravel()
+        cells = np.flatnonzero(target)
+        seed = int(cells[np.argmax(psi[cells])])
+        order, pred = breadth_first_order(self._maximin_tree(pot) if tree is None else tree, seed,
+                                          directed=False, return_predecessors=True)
         b = np.full(psi.size, np.nan)
         b[seed] = psi[seed]
-        fd = self.fd.ravel()
         for node in order[1:]:  # parents come first in breadth-first order
             parent = pred[node]
-            b[node] = b[parent] if fd[node] else min(b[parent], psi[node])
+            b[node] = b[parent] if target[node] else min(b[parent], psi[node])
         return b.reshape(self.grid.shape)
+
+    def collection(self, pot: Potential, storage: int) -> tuple[dict, TransferPath]:
+        """Worst collection barrier from the bottom silicon of each column into the PD."""
+        psi = pot.psi.ravel()
+        si = self.sim.mat == SI
+        has_si = si.any(axis=-1)
+        deepest = si.shape[-1] - 1 - np.argmax(si[..., ::-1], axis=-1)  # bottom Si cell of each column
+        # the bottom surface: columns whose silicon goes all the way down (not those above a trench)
+        full = has_si & (deepest == deepest[has_si].max())
+        bottom = np.ravel_multi_index((*np.nonzero(full), deepest[full]), si.shape)
+        tree = self._maximin_tree(pot)
+        neck = self.bottlenecks(pot, self.pd, tree).ravel()
+        barrier = psi[bottom] - neck[bottom]
+        worst = int(bottom[np.argmax(barrier)])
+        path = self._path(pot, worst, storage, tree)
+        z = self.grid.z_edges
+        pd_cells = np.flatnonzero(self.pd.ravel())
+        pd_bottom = float(z[np.unravel_index(pd_cells, self.grid.shape)[-1].max() + 1])
+        si_bottom = float(z[deepest[full].max() + 1])
+        info = {"barrier_v": round(max(float(barrier.max()), 0.0), 4),
+                "worst_start_nm": [round(float(v), 1) for v in self._centers[worst]],
+                "bottom_surface_holes_cm3_min": float(f"{pot.p.ravel()[bottom].min():.3g}"),
+                "pd_bottom_nm": round(pd_bottom, 1), "silicon_bottom_nm": round(si_bottom, 1),
+                "silicon_below_pd_nm": round(si_bottom - pd_bottom, 1)}
+        return info, self._profile(psi, path, float(psi[worst]), float(neck[worst]))
 
     # ------------------------------------------------------------ figures
 
@@ -193,6 +239,7 @@ class PixelAnalysis:
         storage = self.storage_cell(empty_off)
         off = self.transfer_path(empty_off, storage)
         sensor = off.sensor_v
+        collection, from_bottom = self.collection(empty_off, storage)
 
         # full well: lower phi_PD until the PD reaches the TG saddle or the substrate level
         def overflow(phi):
@@ -217,6 +264,7 @@ class PixelAnalysis:
         residual = self.electrons(left)
 
         self.states = {"empty, TG off": (empty_off, off), "empty, TG on": (empty_on, on)}
+        self.collection_path = from_bottom
         unit = "per_um" if self.grid.ndim == 2 else ""
         return {
             "conditions": asdict(s),
@@ -228,6 +276,7 @@ class PixelAnalysis:
             "full_well": {f"electrons{'_' + unit if unit else ''}": round(self.electrons(full), 1),
                           "limited_by": limit, "phi_pd_v": round(phi_full, 4)},
             f"residual_electrons{'_' + unit if unit else ''}": float(f"{residual:.3g}"),
+            "collection_from_bottom": collection,
             "charge_vs_phi_pd": qv,
             "units": "electrons per um of width (2D)" if unit else "electrons",
         }

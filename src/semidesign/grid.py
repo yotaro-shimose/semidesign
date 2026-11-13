@@ -198,6 +198,19 @@ class Grid:
         half_i, half_j, area = self.face_geometry
         return series_conductance(k[i], k[j], half_i, half_j, area)
 
+    def flipped(self) -> "Grid":
+        """The same grid seen from the back side: the depth axis reversed (z -> -z).
+
+        Arrays on the flipped grid are ``a[..., ::-1]`` of arrays on this one.
+        Lateral coordinates are kept, so a mask position means the same place
+        on both sides.
+        """
+        g = object.__new__(Grid)
+        g.__dict__.update({k: v for k, v in self.__dict__.items()
+                           if not isinstance(getattr(Grid, k, None), cached_property)})
+        g.edges = self.edges[:-1] + (-self.edges[-1][::-1],)
+        return g
+
     # ------------------------------------------------------------------ misc
 
     def mask(self, openings: list[list[float]] | None) -> np.ndarray:
